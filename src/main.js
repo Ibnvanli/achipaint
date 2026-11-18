@@ -1,0 +1,1040 @@
+/* 装配：把核心、UI、插件接起来
+ * 热路径（pointer→stroke→composite）全同步，中间不 await、不经过插件。
+ */
+import { Doc, TILE } from './core/canvas.js';
+import { Brush, Stroke } from './core/brush.js';
+import { HokusaiEngine } from './core/hokusai-engine.js';
+import { History } from './core/history.js';
+import { Bus, PluginHost } from './core/bus.js';
+import { DEFAULT_SWATCHES } from './core/color.js';
+import { Slider } from './ui/widgets.js';
+import { ColorPicker } from './ui/colorpicker.js';
+import pngExporter from './plugins/export-png.js';
+
+const $ = id => document.getElementById(id);
+
+/* ---------- 状态 ---------- */
+const doc = new Doc(2480, 3508);
+const brush = new Brush();
+const history = new History();
+const bus = new Bus();
+const host = new PluginHost(bus);
+host.register(pngExporter);
+
+let tool = 'brush';
+let stroke = null;
+let pending = null;
+
+/* hokusai 外置笔刷引擎。没载入完 / 载入失败时一律退回内置 Stroke，
+ * 保证「画不出线」这种事不会因为引擎换了再发生一次。 */
+const hk = new HokusaiEngine(doc);
+const HOKUSAI_PRESETS = {
+  brush: '基础',
+  calligraphy: '书法',
+  charcoal: '炭笔',
+  marker_fat: '粗马克',
+};
+
+/* ---------- 视图 ---------- */
+const view = $('view');
+// desynchronized: 让浏览器跳过一部分合成同步，显著降低笔迹上屏延迟。
+// 代价是极端情况下可能撕裂，但对绘画来说延迟比撕裂重要得多。
+const vctx = view.getContext('2d', { desynchronized: true, alpha: false });
+view.style.touchAction = 'none';   // 防止触屏/笔被当作滚动手势
+let dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+function resize() {
+  const r = $('stage').getBoundingClientRect();
+  view.width = r.width * dpr;
+  view.height = r.height * dpr;
+  view.style.width = r.width + 'px';
+  view.style.height = r.height + 'px';
+  redraw();
+}
+
+/* ---------- 渲染：每帧一次，只搬离屏缓冲 ---------- */
+let rafId = 0;
+let needFrame = false;
+
+function paint() {
+  rafId = 0;
+  needFrame = false;
+
+  // 先把脏块合进离屏缓冲（只处理变过的块）
+  doc.collectDirty();
+  doc.flushDirty();
+
+  const r = $('stage').getBoundingClientRect();
+  vctx.setTransform(1, 0, 0, 1, 0, 0);
+  // alpha:false 的画布不能用 clearRect（会留黑），改填背景色
+  vctx.fillStyle = '#14161a';
+  vctx.fillRect(0, 0, view.width, view.height);
+  vctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const { x, y, zoom } = doc.view;
+
+  /* 关键优化：只画「视口里看得见的那一小块源区域」。
+   * 以前是 vctx.drawImage(doc.off, 0, 0) —— 每帧把整张 2480×3508
+   * 缓冲（8.7 兆像素）完整缩放一遍，M1 也扛不住，手感就糊了。
+   * 现在算出视口在文档坐标里的矩形，只取这一块去画。
+   */
+  const r2 = $('stage').getBoundingClientRect();
+  const viewLeft = -x / zoom;            // 视口左上角在文档里的坐标
+  const viewTop = -y / zoom;
+  const viewW = r2.width / zoom;
+  const viewH = r2.height / zoom;
+
+  // 与文档范围求交，并留 1px 余量避免边缘缝
+  const sx = Math.max(0, Math.floor(viewLeft) - 1);
+  const sy = Math.max(0, Math.floor(viewTop) - 1);
+  const ex = Math.min(doc.w, Math.ceil(viewLeft + viewW) + 1);
+  const ey = Math.min(doc.h, Math.ceil(viewTop + viewH) + 1);
+
+  if (ex > sx && ey > sy) {
+    vctx.translate(x, y);
+    vctx.scale(zoom, zoom);
+
+    // 纸底只画可见那块
+    vctx.fillStyle = '#ffffff';
+    vctx.fillRect(sx, sy, ex - sx, ey - sy);
+
+    vctx.imageSmoothingEnabled = zoom < 1;
+    vctx.drawImage(doc.off, sx, sy, ex - sx, ey - sy, sx, sy, ex - sx, ey - sy);
+
+    // 边框
+    vctx.strokeStyle = 'rgba(255,255,255,.18)';
+    vctx.lineWidth = 1 / zoom;
+    vctx.strokeRect(0, 0, doc.w, doc.h);
+
+    // 框选：拖拽中的实时框 + 已确定的框
+    const sel = (gesture && gesture.kind === 'select' && gesture.rect) ? gesture.rect : doc.selection;
+    if (sel && sel.x1 > sel.x0 && sel.y1 > sel.y0) {
+      vctx.save();
+      vctx.setLineDash([6 / zoom, 4 / zoom]);
+      vctx.lineWidth = 1 / zoom;
+      vctx.strokeStyle = 'rgba(0,0,0,.75)';
+      vctx.strokeRect(sel.x0, sel.y0, sel.x1 - sel.x0, sel.y1 - sel.y0);
+      vctx.lineDashOffset = 5 / zoom;
+      vctx.strokeStyle = 'rgba(255,255,255,.95)';
+      vctx.strokeRect(sel.x0, sel.y0, sel.x1 - sel.x0, sel.y1 - sel.y0);
+      vctx.restore();
+    }
+  }
+
+  $('st-zoom').textContent = Math.round(zoom * 100) + '%';
+  $('st-mem').textContent = '撤销 ' + (history.bytes / 1048576).toFixed(1) + ' MB';
+}
+
+/* 请求一帧：合并同一帧内的多次请求，绝不重复绘制 */
+function requestPaint() {
+  if (rafId) return;
+  rafId = requestAnimationFrame(paint);
+}
+
+/* 完整重绘（视图变化时才用，代价大） */
+function redraw() {
+  doc.markAllDirty();
+  requestPaint();
+}
+
+/* 鼠标没有压感，e.pressure 恒为 0.5。
+ * 直接喂给 .myb 笔刷会得到一条发丝线 —— 人家的压力曲线是按 0~1 设计的，
+ * 0.5 在 radius 曲线上只有 -0.35，直径直接砍一半还多。
+ * 所以只有笔才用真实压力，鼠标一律按满压。 */
+function pressureOf(e) {
+  if (e.pointerType === 'pen') return e.pressure > 0 ? e.pressure : 0.5;
+  return 1;
+}
+
+/* ---------- 坐标换算 ---------- */
+function toDoc(e) {
+  const r = view.getBoundingClientRect();
+  const cx = (e.clientX - r.left) * dpr;
+  const cy = (e.clientY - r.top) * dpr;
+  return {
+    x: (cx / dpr - doc.view.x) / doc.view.zoom,
+    y: (cy / dpr - doc.view.y) / doc.view.zoom,
+  };
+}
+
+
+view.addEventListener('pointerdown', e => {
+  view.setPointerCapture(e.pointerId);
+  const p = toDoc(e);
+  const pressure = pressureOf(e);
+
+  /* 非绘画工具：先接走，别进下面的笔画流程 */
+  if (tool === 'hand') {
+    gesture = { kind: 'hand', cx: e.clientX, cy: e.clientY, vx: doc.view.x, vy: doc.view.y };
+    return;
+  }
+  if (tool === 'zoom') {
+    zoomAt(e.clientX, e.clientY, e.altKey ? 1 / 1.3 : 1.3);
+    return;
+  }
+  if (tool === 'select') {
+    gesture = { kind: 'select', x0: p.x, y0: p.y, rect: null };
+    requestPaint();
+    return;
+  }
+  if (tool === 'move') {
+    const node = doc.layer;
+    gesture = { kind: 'move', node, x0: p.x, y0: p.y, bounds: node ? boundsOf(node.canvas) : null };
+    return;
+  }
+
+  const layer = doc.paintTarget;
+  if (!layer) return;
+  // 蒙版上画的是「透明度」，颜色固定白色，只有 alpha 有意义
+  const paintBrush = doc.maskMode ? { ...brush, color: '#ffffff' } : brush;
+
+  if (tool === 'pick') {
+    // 吸色：读合成后的像素
+    const r = view.getBoundingClientRect();
+    const px = Math.round((e.clientX - r.left) * dpr);
+    const py = Math.round((e.clientY - r.top) * dpr);
+    const d = vctx.getImageData(px, py, 1, 1).data;
+    const hex = '#' + [d[0], d[1], d[2]].map(v => v.toString(16).padStart(2, '0')).join('');
+    setColor(hex);
+    return;
+  }
+
+  // 橡皮：Stroke 自己走 destination-out
+  // 开笔零成本：不拍任何像素，只建一个空记录。
+  // 真正动到某块时才给它拍快照（Stroke 里的 onFirstTouch 回调）。
+  pending = history.beginStroke(layer);
+
+  // 画笔走 hokusai（.myb 笔刷）；橡皮和「hokusai 没就位」都还走内置引擎
+  if (tool === 'brush' && hk.ready) {
+    const ok = hk.begin(p.x, p.y, pressure, tiltOpts(e, p));
+    if (ok) { requestPaint(); bus.emit('stroke:begin', { x: p.x, y: p.y }); return; }
+  }
+
+  stroke = new Stroke(paintBrush, layer);
+  // 落笔时把「这一笔可能覆盖的区域」原样抓下来；笔移动越界会继续补拍
+  stroke.onRegion = (x0, y0, x1, y1) => history.grabRegion(pending, x0, y0, x1, y1);
+  stroke.clip = doc.selection;
+  if (tool === 'eraser') stroke.erase = true;
+  stroke.begin(p.x, p.y, pressure);   // begin 内部已落第一个点
+  requestPaint();
+  bus.emit('stroke:begin', { x: p.x, y: p.y });
+});
+
+/* 交给 hokusai 的这笔参数。笔倾斜只有 pen 才有（pointerType === 'pen'），
+ * 鼠标/触摸一律按 0 喂 —— libmypaint 的 tilt 约定是 [-1, 1]，事件里是角度。 */
+function tiltOpts(e, p) {
+  const isPen = e.pointerType === 'pen';
+  return {
+    preset: hk.name,
+    size: brush.size,
+    opacity: brush.opacity,
+    color: doc.maskMode ? '#ffffff' : brush.color,
+    stabilize: brush.stabilize,
+    tiltX: isPen ? (e.tiltX || 0) / 90 : 0,
+    tiltY: isPen ? (e.tiltY || 0) / 90 : 0,
+    x: p.x, y: p.y,
+  };
+}
+
+/* .myb 笔刷自带「流量 / 硬度 / 间距」，这三项在 hokusai 里没有对外接口。
+ * 与其让它们看着能用，不如在画笔模式下明确关掉；换回橡皮（内置引擎）再打开。 */
+function syncBrushControls() {
+  const useHk = hk.ready && tool === 'brush';
+  for (const key of ['flow', 'hardness', 'spacing']) {
+    const s = sliders.get(key);
+    if (!s) continue;
+    s.disabled = useHk;
+    s.el.title = useHk ? '.myb 笔刷自带这项，拖动不生效' : '';
+  }
+}
+
+view.addEventListener('pointermove', e => {
+  const p = toDoc(e);
+  $('st-pos').textContent = Math.round(p.x) + ', ' + Math.round(p.y);
+
+  if (gesture) { gestureMove(e); return; }
+
+  // 合并事件：高刷屏不丢点。注意 getCoalescedEvents() 可能返回空数组
+  // （没有合并点、或事件来自脚本合成），此时必须退回原始事件，
+  // 否则这一下 move 直接被吞掉，线就画不出来。
+  let evts = [e];
+  if (typeof e.getCoalescedEvents === 'function') {
+    const got = e.getCoalescedEvents();
+    if (got && got.length) evts = got;
+  }
+
+  if (hk.active) {
+    for (const ev of evts) {
+      const q = toDoc(ev);
+      hk.move(q.x, q.y, pressureOf(ev), tiltOpts(ev, q));
+    }
+    hk.flush();   // 一批合并事件只搬一次块
+    requestPaint();
+    return;
+  }
+
+  if (!stroke) return;
+  for (const ev of evts) {
+    const q = toDoc(ev);
+    stroke.move(q.x, q.y, pressureOf(ev));
+  }
+  // 只请求一帧，不在这里重绘 —— 事件再多，一帧也只画一次
+  requestPaint();
+});
+
+function endStroke() {
+  if (gesture) { gestureEnd(); return; }
+  if (hk.active) {
+    hk.end();
+    if (pending) history.commit(pending);
+    pending = null;
+    bus.emit('stroke:end', {});
+    requestPaint();
+    return;
+  }
+  if (!stroke) return;
+  stroke.end();
+  if (pending) history.commit(pending);
+
+  stroke = null; pending = null;
+  bus.emit('stroke:end', {});
+  requestPaint();
+}
+
+view.addEventListener('pointerup', endStroke);
+view.addEventListener('pointercancel', endStroke);
+
+/* ---------- 平移缩放 ---------- */
+view.addEventListener('wheel', e => {
+  e.preventDefault();
+  if (e.ctrlKey || e.metaKey) {
+    const r = view.getBoundingClientRect();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    const old = doc.view.zoom;
+    const next = Math.max(0.02, Math.min(16, old * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+    // 以鼠标为锚点缩放
+    doc.view.x = mx - (mx - doc.view.x) * (next / old);
+    doc.view.y = my - (my - doc.view.y) * (next / old);
+    doc.view.zoom = next;
+  } else {
+    doc.view.x -= e.deltaX;
+    doc.view.y -= e.deltaY;
+  }
+  redraw();
+}, { passive: false });
+
+/* ---------- 适应窗口 ---------- */
+function fit() {
+  const r = $('stage').getBoundingClientRect();
+  const z = Math.min(r.width / doc.w, r.height / doc.h) * 0.92;
+  doc.view.zoom = z;
+  doc.view.x = (r.width - doc.w * z) / 2;
+  doc.view.y = (r.height - doc.h * z) / 2;
+  redraw();
+}
+$('btn-fit').onclick = fit;
+
+/* ---------- 工具切换 ---------- */
+const TOOL_KEYS = { b: 'brush', e: 'eraser', i: 'pick', v: 'move', m: 'select', h: 'hand', z: 'zoom' };
+
+function setTool(next) {
+  tool = next;
+  document.querySelectorAll('[data-tool]').forEach(b => {
+    b.classList.toggle('on', b.dataset.tool === tool);
+  });
+  syncBrushControls();
+}
+
+document.querySelectorAll('[data-tool]').forEach(btn => {
+  btn.onclick = () => setTool(btn.dataset.tool);
+});
+
+/* ---------- 手势：抓手 / 缩放 / 移动 / 框选 ---------- */
+let gesture = null;
+
+function zoomAt(clientX, clientY, factor) {
+  const r = view.getBoundingClientRect();
+  const mx = clientX - r.left;
+  const my = clientY - r.top;
+  const old = doc.view.zoom;
+  const next = Math.max(0.02, Math.min(16, old * factor));
+  doc.view.x = mx - (mx - doc.view.x) * (next / old);
+  doc.view.y = my - (my - doc.view.y) * (next / old);
+  doc.view.zoom = next;
+  redraw();
+}
+
+/* 把某个 TileCanvas 整体平移 dx,dy。
+ * 注意是「原地换内容」而不是换对象 —— history 里握着这个 TileCanvas 的引用，
+ * 换对象的话撤销读到的「改完」快照就还是旧的。 */
+function translateTiles(src, dx, dy) {
+  const T = TILE;
+  const old = [...src.tiles.values()].map(t => ({ col: t.col, row: t.row, canvas: t.canvas }));
+  src.tiles.clear();
+  for (const o of old) {
+    const wx = o.col * T + dx, wy = o.row * T + dy;
+    src.forEachTileInBounds(wx, wy, wx + T, wy + T, ctx => {
+      ctx.drawImage(o.canvas, wx, wy);
+    });
+  }
+}
+
+function boundsOf(tc) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const t of tc.tiles.values()) {
+    x0 = Math.min(x0, t.col * TILE);
+    y0 = Math.min(y0, t.row * TILE);
+    x1 = Math.max(x1, t.col * TILE + TILE);
+    y1 = Math.max(y1, t.row * TILE + TILE);
+  }
+  return x1 > x0 ? { x0, y0, x1, y1 } : null;
+}
+
+function commitMove(node, dx, dy) {
+  if (!dx && !dy) return;
+  const target = node.canvas;
+  const b = boundsOf(target);
+  if (!b) return;
+
+  // 撤销：旧位置 ∪ 新位置
+  const pending = history.beginStroke(target);
+  history.grabRegion(pending,
+    Math.min(b.x0, b.x0 + dx), Math.min(b.y0, b.y0 + dy),
+    Math.max(b.x1, b.x1 + dx), Math.max(b.y1, b.y1 + dy));
+
+  translateTiles(target, dx, dy);
+  if (node.mask) translateTiles(node.mask, dx, dy);
+
+  target.markDirty(0, 0, doc.w, doc.h);
+  if (node.mask) node.mask.markDirty(0, 0, doc.w, doc.h);
+  history.commit(pending);
+  redraw();
+}
+
+function gestureMove(e) {
+  const g = gesture;
+  if (!g) return;
+  const p = toDoc(e);
+
+  if (g.kind === 'hand') {
+    doc.view.x = g.vx + (e.clientX - g.cx);
+    doc.view.y = g.vy + (e.clientY - g.cy);
+    redraw();
+    return;
+  }
+
+  if (g.kind === 'select') {
+    g.rect = {
+      x0: Math.min(g.x0, p.x), y0: Math.min(g.y0, p.y),
+      x1: Math.max(g.x0, p.x), y1: Math.max(g.y0, p.y),
+    };
+    requestPaint();
+    return;
+  }
+
+  if (g.kind === 'move') {
+    const dx = Math.round(p.x - g.x0);
+    const dy = Math.round(p.y - g.y0);
+    doc.previewOffset = { node: g.node, dx, dy };
+    // 只重画「旧位置 ∪ 新位置」那一块，别整张重合成
+    const b = g.bounds || { x0: 0, y0: 0, x1: doc.w, y1: doc.h };
+    doc.markRegionDirty(
+      Math.min(b.x0, b.x0 + dx), Math.min(b.y0, b.y0 + dy),
+      Math.max(b.x1, b.x1 + dx), Math.max(b.y1, b.y1 + dy));
+    requestPaint();
+    return;
+  }
+}
+
+function gestureEnd() {
+  const g = gesture;
+  gesture = null;
+  if (!g) return;
+
+  if (g.kind === 'select') {
+    const r = g.rect;
+    doc.selection = (r && (r.x1 - r.x0) > 1 && (r.y1 - r.y0) > 1) ? r : null;
+    requestPaint();
+    return;
+  }
+
+  if (g.kind === 'move') {
+    const off = doc.previewOffset;
+    doc.previewOffset = null;
+    if (off && off.node === g.node) commitMove(g.node, off.dx, off.dy);
+    else requestPaint();
+    return;
+  }
+
+  requestPaint();
+}
+
+/* ---------- 笔刷属性：Blender 式滑块 ----------
+ * 整条能拖、数字压在条上、滚轮和方向键都能改。
+ * 这里只负责「UI 值 → 笔刷真实值」的换算（大多要除以 100）。
+ */
+const sliders = new Map();
+
+function makeSlider(host, opts) {
+  const s = new Slider(opts);
+  if (opts.id) s.el.id = opts.id;
+  sliders.set(opts.key, s);
+  host.appendChild(s.el);
+  return s;
+}
+
+const BRUSH_SLIDERS = [
+  { key: 'size',      label: '大小',     min: 1, max: 600, value: 80,  scale: v => v },
+  { key: 'opacity',   label: '不透明度', min: 1, max: 100, value: 100, scale: v => v / 100 },
+  { key: 'flow',      label: '流量',     min: 1, max: 100, value: 100, scale: v => v / 100 },
+  { key: 'hardness',  label: '硬度',     min: 0, max: 100, value: 60,  scale: v => v / 100 },
+  { key: 'spacing',   label: '间距',     min: 1, max: 30,  value: 4,   scale: v => v / 100 },
+  { key: 'stabilize', label: '稳定',     min: 0, max: 90,  value: 12,  scale: v => v / 100 },
+];
+
+const brushHost = $('brush-sliders');
+for (const cfg of BRUSH_SLIDERS) {
+  brush[cfg.key] = cfg.scale(cfg.value);
+  makeSlider(brushHost, {
+    key: cfg.key,
+    label: cfg.label,
+    min: cfg.min, max: cfg.max, step: 1, value: cfg.value,
+    onChange: v => { brush[cfg.key] = cfg.scale(v); },
+  });
+}
+
+/* ---------- 颜色：Blender 式取色器 ----------
+ * 色轮 + 明度竖条 + RGB/HSV 切换 + 三根通道条。
+ * 这里只做「取色器 ↔ 笔刷颜色 / hex 框 / 色块」的同步。
+ */
+function hexOf({ r, g, b }) {
+  return '#' + [r, g, b].map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
+}
+
+function parseHex(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+/* 主色 / 副色：两个槽，取色器编辑的是「当前槽」。 */
+const colors = { primary: '#e8eaf0', secondary: '#101014' };
+let colorSlot = 'primary';
+
+function paintSwatches() {
+  $('sw-primary').style.background = colors.primary;
+  $('sw-secondary').style.background = colors.secondary;
+  $('sw-primary').classList.toggle('active', colorSlot === 'primary');
+  $('sw-secondary').classList.toggle('active', colorSlot === 'secondary');
+}
+
+function applyColor(hex, fromPicker) {
+  const rgb = parseHex(hex);
+  if (!rgb) return;
+  const c = hexOf(rgb);
+  colors[colorSlot] = c;
+  brush.color = colors.primary;
+  $('color').value = c;
+  $('hex').value = c;
+  paintSwatches();
+  if (!fromPicker) picker.setValue(c);   // 回写会把取色器光标弹回去，从它自己来就别写
+}
+
+function setColor(hex) { applyColor(hex, false); }
+
+const picker = new ColorPicker({
+  host: $('color-picker'),
+  value: colors.primary,
+  size: 176,
+  onChange: hex => applyColor(hex, true),
+});
+
+/* 切到另一个槽时，界面跟着切到那个颜色 */
+function syncColorSlot() {
+  paintSwatches();
+  const c = colors[colorSlot];
+  $('color').value = c;
+  $('hex').value = c;
+  picker.setValue(c);
+}
+
+function swapColors() {
+  const t = colors.primary;
+  colors.primary = colors.secondary;
+  colors.secondary = t;
+  brush.color = colors.primary;
+  syncColorSlot();
+}
+
+$('sw-primary').onclick = () => { colorSlot = 'primary'; syncColorSlot(); };
+$('sw-secondary').onclick = () => { colorSlot = 'secondary'; syncColorSlot(); };
+
+/* 原生取色器和 hex 框：改的都是「当前槽」的颜色 */
+$('color').oninput = e => setColor(e.target.value);
+$('hex').onchange = e => setColor(e.target.value);
+$('hex').onkeydown = e => { if (e.key === 'Enter') setColor(e.target.value); };
+
+const sw = $('swatches');
+DEFAULT_SWATCHES.forEach(c => {
+  const d = document.createElement('button');
+  d.className = 'sw';
+  d.style.background = c;
+  d.title = c;
+  d.onclick = () => setColor(c);
+  sw.appendChild(d);
+});
+
+paintSwatches();
+syncColorSlot();
+
+/* ---------- 图层蒙版 ----------
+ * 只做「透明度蒙版」：笔画落在蒙版上，白 = 看得见，空 = 抠掉。
+ * 合成时先把这个图层画到暂存，再 destination-in 蒙版。
+ */
+function setMaskMode(on) {
+  const l = doc.layer;
+  if (on && l && !l.mask) l.ensureMask();
+  doc.maskMode = !!(on && l && l.mask);
+  $('btn-mask').classList.toggle('on', doc.maskMode);
+  redraw();
+}
+
+$('btn-mask').onclick = () => setMaskMode(!doc.maskMode);
+
+/* ---------- 图层树 ----------
+ * 显示顺序就是 children 的顺序（children[0] 在最上面），合成时倒着走。
+ * 行可以拖：拖到组的中间段 = 放进组里，拖到行上/下半 = 插到它前面/后面。
+ */
+let uidSeq = 0;
+const nodeById = new Map();
+
+function uidOf(node) {
+  if (!node._uid) {
+    node._uid = 'n' + (++uidSeq);
+    nodeById.set(node._uid, node);
+  }
+  return node._uid;
+}
+
+function layerRowEl(node) {
+  return $('layers').querySelector(`.lay-row[data-uid="${uidOf(node)}"]`);
+}
+
+/* 双击名字原地改名。空名字不接受，Esc 放弃。 */
+function startRename(node, span) {
+  const inp = document.createElement('input');
+  inp.className = 'lay-rename';
+  inp.value = node.name;
+  span.textContent = '';
+  span.appendChild(inp);
+  inp.focus();
+  inp.select();
+
+  /* 守卫：inp.remove() 会同步触发 blur，blur 又调一次 done，
+   * 第二次 remove 就抛 NotFoundError。只认第一次。 */
+  let finished = false;
+  const done = commit => {
+    if (finished) return;
+    finished = true;
+    const v = inp.value.trim();
+    if (commit && v) node.name = v;
+    if (inp.isConnected) inp.remove();
+    renderLayers();
+  };
+
+  inp.addEventListener('pointerdown', e => e.stopPropagation());
+  inp.addEventListener('dblclick', e => e.stopPropagation());
+  inp.addEventListener('blur', () => done(true));
+  inp.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); done(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); done(false); }
+  });
+}
+
+function layerRow(node, depth) {
+  const row = document.createElement('div');
+  row.className = 'lay-row'
+    + (node === doc.selected ? ' on' : '')
+    + (node.isGroup ? ' group' : '');
+  row.dataset.uid = uidOf(node);
+  row.style.paddingLeft = (4 + depth * 14) + 'px';
+
+  const exp = document.createElement('button');
+  exp.className = 'lay-exp';
+  if (node.isGroup) {
+    exp.textContent = node.expanded ? '▾' : '▸';
+    exp.title = node.expanded ? '收起' : '展开';
+    exp.onclick = e => {
+      e.stopPropagation();
+      node.expanded = !node.expanded;
+      renderLayers();
+    };
+  } else {
+    exp.classList.add('ghost');
+  }
+
+  const eye = document.createElement('button');
+  eye.className = 'lay-eye' + (node.visible ? ' on' : '');
+  eye.textContent = node.visible ? '◉' : '○';
+  eye.title = node.visible ? '隐藏' : '显示';
+  eye.onclick = e => {
+    e.stopPropagation();
+    node.visible = !node.visible;
+    renderLayers();
+    redraw();
+  };
+
+  const name = document.createElement('span');
+  name.className = 'lay-name';
+  name.textContent = node.name;
+  name.title = node.name + '（双击改名）';
+  name.ondblclick = e => { e.stopPropagation(); startRename(node, name); };
+
+  row.append(exp, eye, name);
+  // 这里**不能**调 renderLayers()：整棵树重建的话，
+  // 第一次点击就把这个元素换掉了，第二次点在新元素上，浏览器不会认成双击。
+  row.onclick = () => selectNode(node);
+  row.addEventListener('pointerdown', e => startLayerDrag(e, node));
+  return row;
+}
+
+/* 画布 2D 原生支持的混合模式，名字用中文 */
+const BLEND_MODES = [
+  ['source-over', '正常'],
+  ['multiply', '正片叠底'],
+  ['screen', '滤色'],
+  ['overlay', '叠加'],
+  ['darken', '变暗'],
+  ['lighten', '变亮'],
+  ['color-dodge', '颜色减淡'],
+  ['color-burn', '颜色加深'],
+  ['hard-light', '强光'],
+  ['soft-light', '柔光'],
+  ['difference', '差值'],
+  ['exclusion', '排除'],
+  ['hue', '色相'],
+  ['saturation', '饱和度'],
+  ['color', '颜色'],
+  ['luminosity', '明度'],
+];
+
+function doDelete(node) {
+  if (doc.deleteNode(node)) {
+    renderLayers();
+    redraw();
+  }
+}
+
+/* 选中那一行下面挂一条属性：不透明度 / 混合模式 / 删除。
+ * 放在行下面而不是行里面 —— 行里塞下拉框和滑杆会把树挤变形，拖拽也没法做了。 */
+function layerProps(node) {
+  const wrap = document.createElement('div');
+  wrap.className = 'lay-props';
+  wrap.dataset.for = uidOf(node);
+
+  const op = new Slider({
+    label: '不透明度', min: 0, max: 100, step: 1,
+    value: Math.round(node.opacity * 100),
+    onChange: v => { node.opacity = v / 100; redraw(); },
+  });
+  op.el.classList.add('lp-op');
+
+  const mdRow = document.createElement('div');
+  mdRow.className = 'lp-row';
+
+  const sel = document.createElement('select');
+  sel.className = 'lp-mode';
+  for (const [value, label] of BLEND_MODES) {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    sel.appendChild(o);
+  }
+  sel.value = node.mode;
+  sel.onchange = () => { node.mode = sel.value; redraw(); };
+
+  const del = document.createElement('button');
+  del.className = 'btn icon lp-del';
+  del.textContent = '×';
+  del.title = node.isGroup ? '删除组（连同里面的图层）' : '删除图层';
+  del.onclick = e => { e.stopPropagation(); doDelete(node); };
+
+  mdRow.append(sel, del);
+  wrap.append(op.el, mdRow);
+  return wrap;
+}
+
+/* 只换选中态：更新高亮 + 把属性条挪到新选中的行下面，
+ * 其它行元素保持原样（双击改名依赖这一点）。 */
+function selectNode(node) {
+  doc.select(node);
+  if (doc.maskMode) setMaskMode(false);
+  const box = $('layers');
+  box.querySelectorAll('.lay-row').forEach(r => {
+    r.classList.toggle('on', r.dataset.uid === uidOf(node));
+  });
+  // 属性条固定在列表顶部（吸顶），不进到行之间 ——
+  // 插在选中行下面会让它后面所有行往下跳，下一次点击就点空了。
+  box.querySelectorAll('.lay-props').forEach(p => p.remove());
+  box.prepend(layerProps(node));
+}
+
+function renderLayers() {
+  const box = $('layers');
+  box.innerHTML = '';
+  if (doc.selected) box.appendChild(layerProps(doc.selected));
+  const walk = (nodes, depth) => {
+    for (const n of nodes) {
+      box.appendChild(layerRow(n, depth));
+      if (n.isGroup && n.expanded) walk(n.children, depth + 1);
+    }
+  };
+  walk(doc.root.children, 0);
+}
+
+/* ---- 拖拽：把图层挪进组、挪出组、上下换位 ---- */
+let dragState = null;
+
+function startLayerDrag(e, node) {
+  if (typeof e.button === 'number' && e.button !== 0) return;
+  if (e.target.closest('button')) return;      // 眼睛 / 展开箭头不触发拖动
+  if (e.preventDefault) e.preventDefault();    // 别让浏览器顺手选中一行行文字
+  dragState = { node, x0: e.clientX, y0: e.clientY, active: false, target: null };
+  window.addEventListener('pointermove', onLayerDragMove);
+  window.addEventListener('pointerup', onLayerDragEnd, { once: true });
+}
+
+function hitLayerTarget(cx, cy) {
+  const box = $('layers');
+
+  // 属性条不是行，落在它上面就当「插到那一行后面」
+  for (const p of box.querySelectorAll('.lay-props')) {
+    const r = p.getBoundingClientRect();
+    if (cy < r.top || cy > r.bottom) continue;
+    const node = nodeById.get(p.dataset.for);
+    if (!node) continue;
+    const parent = node.parent || doc.root;
+    return { row: null, parent, index: parent.children.indexOf(node) + 1, into: false };
+  }
+
+  for (const row of box.querySelectorAll('.lay-row')) {
+    const r = row.getBoundingClientRect();
+    if (cy < r.top || cy > r.bottom || cx < r.left - 40 || cx > r.right + 40) continue;
+    const node = nodeById.get(row.dataset.uid);
+    if (!node) continue;
+    const rel = (cy - r.top) / r.height;
+    // 组的中间一段 = 放进这个组
+    if (node.isGroup && rel > 0.28 && rel < 0.72) {
+      return { row, parent: node, index: 0, into: true };
+    }
+    const parent = node.parent || doc.root;
+    const i = parent.children.indexOf(node);
+    const above = rel < 0.5;
+    return { row, parent, index: above ? i : i + 1, into: false, pos: above ? 'top' : 'bottom' };
+  }
+  // 落在列表下方空白：放到根的最底下
+  return { row: null, parent: doc.root, index: doc.root.children.length, into: false };
+}
+
+function onLayerDragMove(e) {
+  if (!dragState) return;
+  if (!dragState.active) {
+    if (Math.abs(e.clientX - dragState.x0) + Math.abs(e.clientY - dragState.y0) < 5) return;
+    dragState.active = true;
+    const el = layerRowEl(dragState.node);
+    if (el) el.classList.add('dragging');
+  }
+  const t = hitLayerTarget(e.clientX, e.clientY);
+  dragState.target = t;
+
+  const box = $('layers');
+  box.querySelectorAll('.lay-row')
+    .forEach(r => r.classList.remove('drop-into', 'drop-top', 'drop-bottom'));
+  if (!t || !t.row) return;
+  t.row.classList.add(t.into ? 'drop-into' : ('drop-' + t.pos));
+}
+
+function onLayerDragEnd() {
+  window.removeEventListener('pointermove', onLayerDragMove);
+  const st = dragState;
+  dragState = null;
+  $('layers').querySelectorAll('.lay-row')
+    .forEach(r => r.classList.remove('drop-into', 'drop-top', 'drop-bottom', 'dragging'));
+  if (!st || !st.active || !st.target) return;
+  const t = st.target;
+  if (doc.moveNode(st.node, t.parent, t.index)) {
+    if (t.parent.isGroup && !t.parent.expanded) t.parent.expanded = true;
+    renderLayers();
+    redraw();
+  }
+}
+
+/* 面板折叠：点标题收放，点标题里的按钮不算 */
+document.querySelectorAll('.panel > h3').forEach(h => {
+  h.onclick = e => {
+    if (e.target.closest('button')) return;
+    h.parentElement.classList.toggle('collapsed');
+  };
+});
+
+$('btn-add-layer').onclick = () => { doc.addLayer(); renderLayers(); redraw(); };
+$('btn-add-group').onclick = () => { doc.addGroup(); renderLayers(); redraw(); };
+
+/* ---------- 撤销 ---------- */
+$('btn-undo').onclick = () => { if (history.undo(doc.layer.canvas)) redraw(); };
+$('btn-redo').onclick = () => { if (history.redo(doc.layer.canvas)) redraw(); };
+
+window.addEventListener('keydown', e => {
+  const meta = e.metaKey || e.ctrlKey;
+  if (meta && e.key.toLowerCase() === 'z') {
+    e.preventDefault();
+    if (e.shiftKey) { if (history.redo(doc.layer.canvas)) redraw(); }
+    else { if (history.undo(doc.layer.canvas)) redraw(); }
+  }
+  const k = e.key.toLowerCase();
+  if (!meta && TOOL_KEYS[k]) { setTool(TOOL_KEYS[k]); }
+  if (!meta && k === 'x') { swapColors(); }
+  if (e.key === 'Escape') {
+    if (doc.selection) { doc.selection = null; requestPaint(); }
+    if (doc.maskMode) setMaskMode(false);
+  }
+});
+
+/* ---------- 导出 ---------- */
+$('btn-export').onclick = async () => {
+  const ex = host.exporters.get('png');
+  if (!ex) return;
+  const blob = await ex.run(doc);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'achipaint.png';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  bus.emit('export:done', { id: 'png' });
+};
+
+/* ---------- 调试钩子（开发期用，方便在控制台查状态） ---------- */
+window.__achi = { doc, brush, history, host, bus, redraw, requestPaint, hk };
+
+/* ---------- hokusai 载入 ---------- */
+/* 撤销的钩子：overlay 一变就扩拍，压图层之前那些像素已经存好了 */
+hk.onRegion = (x0, y0, x1, y1) => {
+  if (pending) history.grabRegion(pending, x0, y0, x1, y1);
+};
+
+async function initHokusai() {
+  const sel = $('b-preset');
+  const jsons = {};
+  try {
+    await Promise.all(Object.entries(HOKUSAI_PRESETS).map(async ([file, label]) => {
+      const r = await fetch('./brushes/' + file + '.myb', { cache: 'no-store' });
+      if (!r.ok) throw new Error(file + '.myb ' + r.status);
+      jsons[label] = await r.text();
+    }));
+  } catch (e) {
+    console.error('[hokusai] 预设下载失败，继续用内置笔刷：', e);
+    if (sel) { sel.innerHTML = '<option>内置笔刷</option>'; sel.disabled = true; }
+    syncBrushControls();
+    return;
+  }
+
+  const ok = await hk.load(jsons);
+  if (!ok) {
+    if (sel) { sel.innerHTML = '<option>内置笔刷</option>'; sel.disabled = true; }
+    syncBrushControls();
+    return;
+  }
+
+  /* 默认预设必须固定。jsons 是 Promise.all 并发 fetch 出来的，
+   * 谁先到谁先进对象，键序每次都不一样 —— 不钉死的话，
+   * 每次打开默认笔刷都在换人。 */
+  hk.setPreset(Object.values(HOKUSAI_PRESETS)[0]);
+
+  if (sel) {
+    sel.innerHTML = '';
+    // 顺序也照 HOKUSAI_PRESETS 来，别用并发 fetch 留下的键序
+    for (const name of Object.values(HOKUSAI_PRESETS)) {
+      if (!hk.presets.has(name)) continue;
+      const o = document.createElement('option');
+      o.value = name; o.textContent = name;
+      sel.appendChild(o);
+    }
+    sel.value = hk.name;
+    sel.onchange = () => hk.setPreset(sel.value);
+    syncBrushControls();
+  }
+}
+
+/* ---------- 侧栏宽度 ----------
+ * 拖动左边缘改宽度，结果存 localStorage。
+ * 拖动过程中只改 CSS 变量 + 把画布元素拉满（视觉上跟手），
+ * 松手才真的重算画布像素 —— 每帧重算等于每帧整张重合成，太贵。
+ */
+const SIDEBAR_MIN = 200;
+const SIDEBAR_MAX = 560;
+let sidebarW = 260;
+
+function applySidebarWidth(w) {
+  sidebarW = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.round(w)));
+  $('sidebar').parentElement.style.setProperty('--sidebar-w', sidebarW + 'px');
+  return sidebarW;
+}
+
+/* 色轮跟着宽度走，但只长一点。
+ * 侧栏缺的是「高度」不是「宽度」，轮子长大一截就把下面的图层面板顶出去了。
+ * 260 时还是 176，越宽最多长到 220。 */
+function wheelSizeFor(w) {
+  const content = w - 24;                 // 面板左右内边距
+  const prefer = 176 + Math.max(0, w - 260) * 0.35;
+  return Math.round(Math.min(content - 26, Math.max(176, Math.min(220, prefer))));
+}
+
+try {
+  const saved = Number(localStorage.getItem('achi.sidebarW'));
+  if (saved) applySidebarWidth(saved);
+} catch { /* 隐私模式读不了，用默认值 */ }
+picker.resize(wheelSizeFor(sidebarW));   // 存过宽度的话，色轮一开始就是大的
+
+(function bindSidebarGrip() {
+  const grip = $('sidebar-grip');
+  if (!grip) return;
+
+  grip.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = sidebarW;
+    grip.classList.add('dragging');
+    try { grip.setPointerCapture(e.pointerId); } catch { /* 老浏览器 */ }
+
+    const onMove = ev => {
+      applySidebarWidth(startW - (ev.clientX - startX));
+      const r = $('stage').getBoundingClientRect();
+      view.style.width = r.width + 'px';
+      view.style.height = r.height + 'px';
+    };
+
+    const onUp = () => {
+      grip.classList.remove('dragging');
+      grip.removeEventListener('pointermove', onMove);
+      grip.removeEventListener('pointerup', onUp);
+      try { localStorage.setItem('achi.sidebarW', String(sidebarW)); } catch { /* 忽略 */ }
+      resize();                                  // 真重算画布尺寸
+      picker.resize(wheelSizeFor(sidebarW));
+    };
+
+    grip.addEventListener('pointermove', onMove);
+    grip.addEventListener('pointerup', onUp, { once: true });
+    grip.addEventListener('pointercancel', onUp, { once: true });
+  });
+})();
+
+/* ---------- 启动 ---------- */
+window.addEventListener('resize', resize);
+resize();
+fit();
+renderLayers();
+document.querySelector('[data-tool="brush"]').style.borderColor = 'var(--accent)';
+$('st-size').textContent = doc.w + ' × ' + doc.h;
+initHokusai();

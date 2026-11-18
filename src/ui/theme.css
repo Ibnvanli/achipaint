@@ -1,0 +1,396 @@
+/* AchiPaint 唯一主题源
+ * 规则：所有颜色/圆角/间距/字号只从这里取，组件里不许写死。
+ * 这是 Krita「方角圆角并存」的反面教材改法 —— 一个 token 管到底。
+ */
+:root {
+  /* 灰阶：三级面 + 两级线，全部同族
+   *
+   * 旧值是偏冷的蓝灰（#14161a 一族）。问题在色相：界面铺一层蓝，
+   * 同一块纸上画的颜色就会被衬得偏暖、偏脏 —— 画的人分不清是画错了还是屏偏了。
+   * 现在换成中性灰，只偏暖 1～2 个色阶，不跟画面抢色相。
+   */
+  --bg-0: #141413;
+  --bg-1: #1a1a19;
+  --bg-2: #232322;
+  --bg-3: #2c2c2a;
+  --line-1: #333331;
+  --line-2: #454540;
+
+  /* 文字 */
+  --fg-0: #ecece8;
+  --fg-1: #b4b3ae;
+  --fg-2: #7c7b75;
+
+  /* 强调色：只一个，别多。
+   * 蓝在深灰上太"网页"，换成琥珀 —— 像台灯打在案头，且不会和画布里的蓝绿打架。 */
+  --accent: #dfa03c;
+  --accent-dim: #a9781f;
+
+  /* 圆角：全应用只有两档 */
+  --r-s: 4px;
+  --r-m: 8px;
+
+  /* 间距：4 的倍数 */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+
+  /* 字号：三档 */
+  --t-s: 11px;
+  --t-m: 13px;
+  --t-l: 15px;
+
+  --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+  --mono: "SF Mono", "JetBrains Mono", Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0; height: 100%;
+  background: var(--bg-0);
+  color: var(--fg-0);
+  font: var(--t-m)/1.5 var(--font);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 这是工具界面，不是文档：拖任何地方都不该把文字刷成蓝色。
+ * 只给真正要输入的地方放开。 */
+* {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+input, textarea, select, [contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* ---------- 布局骨架 ---------- */
+.app {
+  display: grid;
+  grid-template-columns: 64px 1fr var(--sidebar-w, 260px);
+  grid-template-rows: 40px 1fr 32px;
+  height: 100vh;
+  gap: 1px;
+  background: var(--line-1);
+}
+
+.titlebar { grid-column: 1 / -1; background: var(--bg-1); display: flex; align-items: center; padding: 0 var(--s-3); gap: var(--s-3); }
+.toolcol { background: var(--bg-1); padding: var(--s-2) 0; display: flex; flex-direction: column; align-items: center; gap: var(--s-1); }
+.stage { background: var(--bg-0); position: relative; overflow: hidden; }
+.sidebar {
+  background: var(--bg-1);
+  position: relative;
+  /* 侧栏缺的从来是高度不是宽度：上面两块按内容自然高，
+     图层面板吃掉剩下的，自己在框里滚 —— 停靠面板就该这样。 */
+  display: flex; flex-direction: column;
+  overflow-y: auto;
+}
+.sidebar > .panel { flex: 0 0 auto; }
+.sidebar > .panel.layers {
+  flex: 1 1 auto; min-height: 170px;
+  display: flex; flex-direction: column;
+  border-bottom: 0;
+}
+.sidebar > .panel.layers > .body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+}
+
+/* 拖左边缘改宽度。宽度存在 localStorage 里，下次打开还是你调过的样子。 */
+.sidebar-grip {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 7px;
+  margin-left: -3px; z-index: 6;
+  cursor: col-resize; touch-action: none;
+}
+.sidebar-grip:hover, .sidebar-grip.dragging { background: var(--accent); opacity: .3; }
+.statusbar { grid-column: 1 / -1; background: var(--bg-1); display: flex; align-items: center; gap: var(--s-4); padding: 0 var(--s-3); font-size: var(--t-s); color: var(--fg-2); }
+
+/* ---------- 控件：全应用共用 ---------- */
+.btn {
+  appearance: none; border: 1px solid var(--line-1); background: var(--bg-2);
+  color: var(--fg-0); border-radius: var(--r-s);
+  padding: var(--s-1) var(--s-3); font: inherit; font-size: var(--t-m);
+  cursor: pointer; transition: background .12s, border-color .12s;
+}
+.btn:hover { background: var(--bg-3); border-color: var(--line-2); }
+.btn:active { transform: translateY(1px); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-dim); border-color: var(--accent-dim); }
+.btn.icon { width: 28px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+
+/* ---------- 左：工具栏 ---------- */
+.tbtn {
+  width: 36px; height: 36px; padding: 0; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid transparent;
+  border-radius: var(--r-s); color: var(--fg-2); cursor: pointer;
+}
+.tbtn svg {
+  width: 18px; height: 18px;
+  fill: none; stroke: currentColor; stroke-width: 1.4;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.tbtn:hover { background: var(--bg-2); color: var(--fg-0); }
+.tbtn.on { background: var(--bg-3); color: var(--accent); border-color: var(--accent); }
+
+/* 主色 / 副色：两个叠起来的方块 */
+.colorstack { position: relative; width: 42px; height: 42px; margin: var(--s-2) 0; flex: 0 0 auto; }
+.csw {
+  position: absolute; width: 26px; height: 26px; padding: 0;
+  border-radius: 2px; border: 1px solid var(--line-2);
+  cursor: pointer; background: #fff;
+}
+.csw-main { left: 0; top: 0; z-index: 2; }
+.csw-sec { right: 0; bottom: 0; }
+.csw.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+.field { display: flex; align-items: center; gap: var(--s-2); margin-bottom: var(--s-2); }
+.field label { flex: 0 0 68px; color: var(--fg-1); font-size: var(--t-s); }
+/* min-width:0 必须写：range 有固有最小宽度（约 125px），
+ * 260px 栏里一行只给得出 236px，它不肯缩就会把右边的数值挤出可视区，
+ * 于是 80 显示成 "8"、100 显示成 "10"。 */
+.field input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); }
+.field .val { flex: 0 0 42px; text-align: right; font-family: var(--mono); font-size: var(--t-s); color: var(--fg-2); font-variant-numeric: tabular-nums; }
+
+/* ---------- Blender 式控件 ----------
+ * 整条就是滑块：拖哪儿都行，没有圆滑块头，数值压在条上。
+ * 填充宽度走 --p；RGB 那类渐变条走 --grad，此时不画填充。 */
+.bslider {
+  position: relative;
+  display: flex; align-items: center; gap: var(--s-2);
+  height: 22px; margin-bottom: var(--s-1);
+  padding: 0 var(--s-2);
+  background: var(--bg-2);
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-s);
+  font-size: var(--t-s);
+  color: var(--fg-0);
+  cursor: ew-resize;
+  overflow: hidden;
+  outline: none;
+}
+.bslider:hover { background: var(--bg-3); }
+.bslider.active { border-color: var(--accent); }
+.bslider:focus-visible { border-color: var(--accent); }
+
+.bs-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: var(--p, 0%);
+  background: var(--accent-dim);
+  pointer-events: none;
+}
+.bs-label { position: relative; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bs-num {
+  position: relative;
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+  color: var(--fg-1);
+}
+.bs-edit {
+  width: 46px; padding: 0 2px;
+  background: var(--bg-0); color: var(--fg-0);
+  border: 1px solid var(--accent); border-radius: 2px;
+  font: inherit; font-family: var(--mono); text-align: right; outline: none;
+}
+
+/* 渐变条（RGB / 色相）：整条就是色带，没有填充 */
+.bslider.grad { background: var(--grad, var(--bg-2)); }
+.bslider.grad:hover { background: var(--grad, var(--bg-3)); }
+.bslider.grad .bs-fill { display: none; }
+.bslider.grad .bs-label,
+.bslider.grad .bs-num { text-shadow: 0 0 2px rgba(0,0,0,.9), 0 0 5px rgba(0,0,0,.7); }
+.bslider.grad .bs-num { color: #fff; }
+
+/* 停用态：别整块降透明度 —— 文字会被一起压到看不清（实测 2.37:1）。
+ * 改成填灰、字降到 --fg-2，仍然读得出来，但一眼知道不归你管。 */
+.bslider.disabled { cursor: default; }
+.bslider.disabled .bs-fill { background: var(--line-2); }
+.bslider.disabled .bs-label { color: var(--fg-2); }
+.bslider.disabled .bs-num { color: var(--fg-2); }
+.bslider.disabled:hover { background: var(--bg-2); }
+
+.field select {
+  flex: 1; min-width: 0; height: 22px;
+  appearance: none; -webkit-appearance: none;
+  padding: 0 22px 0 var(--s-2);
+  background-color: var(--bg-2);
+  /* 箭头的原生样式在深色下很脏，换成自己画的小三角 */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5'><path d='M0 0h8L4 5z' fill='%237c7b75'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right var(--s-2) center;
+  color: var(--fg-0);
+  border: 1px solid var(--line-1); border-radius: var(--r-s);
+  font-family: inherit; font-size: var(--t-s); outline: none;
+  cursor: pointer;
+}
+.field select:hover { background-color: var(--bg-3); }
+.field select:focus { border-color: var(--accent); }
+
+/* ---------- 颜色区 ---------- */
+.colorline { display: flex; gap: var(--s-2); align-items: center; margin-bottom: var(--s-2); }
+
+/* 原生取色器留着（系统取色盘还能用），但把它的方框外壳扒掉，只当一个色块 */
+.swatch {
+  width: 40px; height: 22px; padding: 0; flex: 0 0 auto;
+  appearance: none; -webkit-appearance: none;
+  background: var(--bg-2); cursor: pointer;
+  border: 1px solid var(--line-1); border-radius: var(--r-s);
+  overflow: hidden;
+}
+.swatch::-webkit-color-swatch-wrapper { padding: 0; }
+.swatch::-webkit-color-swatch { border: 0; border-radius: 2px; }
+
+.hexinp {
+  flex: 1; min-width: 0; height: 22px; padding: 0 var(--s-2);
+  background: var(--bg-2); color: var(--fg-0);
+  border: 1px solid var(--line-1); border-radius: var(--r-s);
+  font-family: var(--mono); font-size: var(--t-s); outline: none;
+}
+.hexinp:focus { border-color: var(--accent); }
+
+.swatches { display: grid; grid-template-columns: repeat(9, 1fr); gap: 4px; margin-top: var(--s-2); }
+.swatches .sw {
+  height: 18px; padding: 0; cursor: pointer;
+  border: 1px solid var(--line-2); border-radius: 2px;
+}
+.swatches .sw:hover { border-color: var(--fg-2); }
+
+/* ---------- 图层树 ---------- */
+.lay-tools { display: flex; gap: var(--s-1); margin-left: auto; }
+/* 高度由 .panel.layers 的弹性分配决定，这里不用再限死 */
+
+/* 选中行下面的属性条 */
+/* 吸在列表顶部：滚列表时它不动，行也不会因为选中而跳位 */
+.lay-props {
+  position: sticky; top: 0; z-index: 2;
+  margin: 0 0 var(--s-2) 0;
+  padding: var(--s-1) var(--s-2);
+  background: var(--bg-0);
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-s);
+}
+.lay-props .bslider { margin-bottom: var(--s-1); }
+/* 标签压在琥珀填充上，别再用 fg-2，不然深底浅字反着来 */
+.lay-props .lp-op .bs-label { color: var(--fg-0); }
+.lay-props { box-shadow: 0 2px 0 var(--bg-1); }
+.lp-row { display: flex; align-items: center; gap: var(--s-1); }
+.lp-mode {
+  flex: 1; min-width: 0; height: 22px;
+  appearance: none; -webkit-appearance: none;
+  padding: 0 20px 0 var(--s-2);
+  background-color: var(--bg-2);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5'><path d='M0 0h8L4 5z' fill='%237c7b75'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right var(--s-2) center;
+  color: var(--fg-0);
+  border: 1px solid var(--line-1); border-radius: var(--r-s);
+  font: inherit; font-size: var(--t-s); outline: none; cursor: pointer;
+}
+.lp-mode:hover { background-color: var(--bg-3); }
+.lp-mode:focus { border-color: var(--accent); }
+.lp-del { width: 22px; height: 22px; flex: 0 0 auto; font-size: 14px; line-height: 1; }
+.lp-del:hover { color: #e06a6a; border-color: #e06a6a; background: var(--bg-2); }
+.lay-tools .btn.icon { width: 22px; height: 22px; }
+
+.lay-row {
+  position: relative;
+  display: flex; align-items: center; gap: var(--s-1);
+  height: 24px; padding-right: var(--s-1);
+  border-radius: var(--r-s);
+  font-size: var(--t-s); color: var(--fg-1);
+  cursor: default;
+}
+.lay-row:hover { background: var(--bg-2); }
+.lay-row.on { background: var(--bg-3); color: var(--fg-0); }
+.lay-row.group .lay-name { color: var(--fg-0); font-weight: 600; }
+
+.lay-exp, .lay-eye {
+  flex: 0 0 auto; padding: 0; background: none; border: 0; cursor: pointer;
+  color: var(--fg-2); font-size: 10px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.lay-exp { width: 14px; height: 14px; }
+.lay-exp:hover, .lay-eye:hover { color: var(--fg-0); }
+.lay-exp.ghost { visibility: hidden; }
+.lay-eye { width: 16px; height: 16px; }
+.lay-eye.on { color: var(--fg-0); }
+.lay-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lay-rename {
+  width: 100%; height: 18px; padding: 0 4px;
+  background: var(--bg-0); color: var(--fg-0);
+  border: 1px solid var(--accent); border-radius: 2px;
+  font: inherit; font-size: var(--t-s); outline: none;
+}
+
+.lay-row.dragging { opacity: .4; }
+.lay-row.drop-into {
+  outline: 1px solid var(--accent); outline-offset: -1px;
+  background: rgba(223, 160, 60, .14);
+}
+.lay-row.drop-top::before,
+.lay-row.drop-bottom::after {
+  content: ''; position: absolute; left: 2px; right: 2px; height: 2px;
+  background: var(--accent); border-radius: 1px;
+}
+.lay-row.drop-top::before { top: -1px; }
+.lay-row.drop-bottom::after { bottom: -1px; }
+
+/* ---------- 取色器（Blender 那个弹窗的排法） ---------- */
+.cp-top { display: flex; gap: var(--s-2); }
+.cp-wheel-wrap {
+  position: relative; width: 176px; height: 176px; flex: 0 0 auto;
+  cursor: crosshair; touch-action: none;
+}
+.cp-wheel { display: block; width: 100%; height: 100%; border-radius: 50%; }
+/* 明度不是重画色盘，而是盖一层黑圆 —— 等价于整体乘 V */
+.cp-dim { position: absolute; inset: 0; border-radius: 50%; background: #000; pointer-events: none; }
+.cp-cursor {
+  position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px;
+  border: 2px solid #fff; border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.7), inset 0 0 0 1px rgba(0,0,0,.55);
+  pointer-events: none;
+}
+.cp-vbar-wrap { flex: 1; min-width: 0; display: flex; justify-content: flex-end; height: 176px; }
+
+.cp-mode { display: flex; gap: 2px; margin: var(--s-2) 0; }
+.cp-mode button {
+  flex: 1; height: 22px; padding: 0;
+  background: var(--bg-2); color: var(--fg-1);
+  border: 1px solid var(--line-1); border-radius: var(--r-s);
+  font: inherit; font-size: var(--t-s); cursor: pointer;
+}
+.cp-mode button:hover { background: var(--bg-3); }
+.cp-mode button.on { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+
+/* 竖条：填充从底往上，拖动走 clientY */
+.bslider.vert { width: 18px; height: 100%; margin: 0; padding: 0; cursor: ns-resize; }
+.bslider.vert .bs-fill { width: 100%; height: var(--p, 0%); top: auto; bottom: 0; }
+.bslider.vert .bs-label,
+.bslider.vert .bs-num { display: none; }
+
+.panel { border-bottom: 1px solid var(--line-1); }
+.panel > h3 {
+  margin: 0; padding: var(--s-2) var(--s-3);
+  font-size: var(--t-s); font-weight: 600; letter-spacing: .04em;
+  color: var(--fg-2); text-transform: uppercase;
+  display: flex; align-items: center; justify-content: flex-start; gap: var(--s-1);
+}
+.panel > .body { padding: 0 var(--s-3) var(--s-3); }
+
+/* 面板可以点标题折叠 —— 侧栏一共 800 多像素，三块面板全摊开时图层面板会被挤出去 */
+.panel > h3 { cursor: pointer; user-select: none; }
+.panel > h3::before {
+  content: '▾'; margin-right: var(--s-1); font-size: 9px;
+  color: var(--fg-2); flex: 0 0 auto;
+}
+.panel.collapsed > h3::before { content: '▸'; }
+.panel.collapsed > .body { display: none; }
+
+/* 画布 */
+canvas { display: block; position: absolute; inset: 0; }
+
+/* 状态条 */
+.statusbar .sep { width: 1px; height: 12px; background: var(--line-2); }
