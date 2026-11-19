@@ -1,6 +1,6 @@
 # AchiPaint
 
-> **v0.1.0-alpha.1** · Alpha
+> **v0.1.0-alpha.1** · Alpha · MIT License
 >
 > 能用，但别拿它干正事。缺的东西不少（见 [ROADMAP.md](ROADMAP.md)），
 > 而且随机崩、随机丢功能这种事还时有发生。**画完记得 ⌘S**。
@@ -240,3 +240,24 @@ build/           应用图标与签名用的 entitlements
 
 一大串，按「缺了最难受」排好了，见 [ROADMAP.md](ROADMAP.md)。
 
+---
+
+## 性能
+
+[**Electron 能不能做专业绘画工具？**](PERFORMANCE.md) —— 实测数据、瓶颈定位、分阶段优化路线。
+
+一句话：能。Photopea 和 Figma 已经证明 Web 技术栈跑得动专业工具，
+真正的差距在于我们还没把笔刷计算挪出主线程、还没用 GPU 合成。
+那份文档里写了 v0.2 到 v1.0 每一步要做什么、验收线在哪。
+
+## 协议
+
+本项目以 **MIT** 发布。
+
+笔刷引擎来自 [hokusai](https://github.com/reearth/hokusai)（libmypaint 的 Rust 移植，
+MIT / Apache-2.0），完整第三方声明见 [NOTICE](NOTICE)。
+
+## 参与
+
+alpha 阶段，接口和文件格式都可能变。
+想提意见直接开 issue，尤其是**性能** —— 那是这个项目唯一想赢的地方。

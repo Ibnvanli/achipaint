@@ -1,26 +1,36 @@
 AchiPaint
-Copyright (c) 2026 MoalCaswes
+Copyright (c) 2026 Moalcaswes
 
-本软件包含第三方项目派生的代码与二进制文件，其版权归原作者所有。
+This project is licensed under the MIT License — see LICENSE.
 
---------------------------------------------------------------------------
-hokusai — https://github.com/reearth/hokusai
-Copyright (c) 2026 Re:Earth and contributors
-双许可：MIT 或 Apache-2.0。本项目按 MIT 条款使用。
+---------------------------------------------------------------------------
+Third-party components
+---------------------------------------------------------------------------
 
-使用形式
-  src/wasm/hokusai.js、src/wasm/hokusai_bg.wasm
-      由 hokusai 的 crates/hokusai-wasm 编译得到的 wasm-bindgen 产物
-  src/brushes/*.myb
-      取自该项目的 examples/fixtures/
+hokusai
+  Rust port of the libmypaint brush engine, compiled to WebAssembly.
+  https://github.com/reearth/hokusai
+  License: MIT / Apache-2.0
 
-修改声明（Apache-2.0 第 4(b) 条要求）
-  编译前修改了 crates/hokusai-wasm/src/lib.rs，改动包括：
-    · 新增 drainDirty()：按 64×64 块增量输出、带 alpha、已裁到画布边界
-    · 把 stroke_to / finish_stroke 包进 begin_atomic / end_atomic，让脏块追踪真正生效
-    · 新增 is_empty() / tile_size() / dirty_entry_bytes()
-    · 把整张画布的 pixels 缓冲改成懒分配
-  完整改动见 patches/hokusai-wasm-drain-dirty.patch
-  基线为上游 commit f7e998173c0e7427b95afe0b6947e3103da60f00
+libmypaint
+  The brush dynamics (pressure, tilt, speed response) this project relies on
+  are derived from libmypaint's implementation.
+  https://github.com/mypaint/libmypaint
+  License: Apache-2.0
 
-许可证原文见 third-party/hokusai/LICENSE-MIT 与 LICENSE-APACHE。
+Electron / Chromium
+  Application shell and rendering engine.
+  https://www.electronjs.org/
+  License: MIT
+
+Rust standard library and wasm-bindgen
+  Used by the compiled hokusai module.
+  License: MIT / Apache-2.0
+
+---------------------------------------------------------------------------
+Brush presets (.myb)
+---------------------------------------------------------------------------
+
+Any brush preset files shipped in this repository originate from the
+libmypaint / MyPaint brush collection, which is licensed under
+Creative Commons Zero (CC0) unless otherwise noted next to the file.
