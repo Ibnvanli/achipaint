@@ -756,6 +756,7 @@ function liftSelection() {
   });
   tc.markDirty(x, y, x + w, y + h);
 
+  op('浮起选区', w + '×' + h);
   floating = { canvas: cv, x, y, w, h, angle: 0, tc, rect: { x, y, w, h }, pending, moved: true };
   doc.selection = null;
   syncFloatBar();
@@ -907,6 +908,7 @@ function rotateLayer(node, deg) {
 
   tc.markDirty(0, 0, doc.w, doc.h);
   if (pending) history.commit(pending);
+  op('旋转', Math.round(deg) + '°');
   redraw();
   toast(`已旋转 ${deg >= 0 ? '+' : ''}${Math.round(deg)}°`);
 }
@@ -945,6 +947,7 @@ $('btn-fit').onclick = fit;
 const TOOL_KEYS = { b: 'brush', e: 'eraser', i: 'pick', v: 'move', m: 'select', h: 'hand', z: 'zoom' };
 
 function setTool(next) {
+  if (tool !== next) op('切换工具', next);
   tool = next;
   document.querySelectorAll('[data-tool]').forEach(b => {
     b.classList.toggle('on', b.dataset.tool === tool);
@@ -1009,6 +1012,7 @@ function commitMove(node, dx, dy) {
     Math.min(b.x0, b.x0 + dx), Math.min(b.y0, b.y0 + dy),
     Math.max(b.x1, b.x1 + dx), Math.max(b.y1, b.y1 + dy));
 
+  op('移动图层', dx + ', ' + dy);
   translateTiles(target, dx, dy);
   if (node.mask) translateTiles(node.mask, dx, dy);
 
@@ -1762,6 +1766,7 @@ async function doSave(forceDialog = false) {
     });
     const r = await saveFile(blob, { name: docName, forceDialog });
     if (r.saved) {
+      op('保存', r.name + (r.path ? '' : ' (无路径)'));
       // 保存成功才改名字；下载兜底时保留原名
       if (!r.download) setDocName(r.name.replace(/\.achi$/i, ''));
       markDirty(false);
@@ -1879,6 +1884,7 @@ async function doOpen(fromPath) {
       ? await openByPath(fromPath)
       : await openFile();
     if (!picked) return false;
+    op('打开', picked.name);
     return await openFromBuffer(picked.buffer, picked.name, picked.path);
   } catch (e) {
     showFileError('打开失败', e);
@@ -2062,13 +2068,19 @@ async function openDevConsole() {
   if (!consoleWin) toast('控制台窗口被拦截了，允许一下弹窗', 'error');
 }
 
-/* 把 console 的警告/错误收进 mainConsole，子窗口轮询读取 */
-for (const level of ['warn', 'error']) {
+/* 四个级别全收 —— 控制台「全部」页要能看到操作流水，不能只有警告和错误 */
+for (const level of ['log', 'info', 'warn', 'error']) {
   const orig = console[level].bind(console);
   console[level] = (...args) => {
     orig(...args);
     mainConsole.push(level, args);
   };
+}
+
+/* 关键操作单独记一笔：文件、文档、工具、变换。
+ * 这些不是 error，但出问题时「最后一步做了什么」往往才是线索。 */
+function op(...parts) {
+  mainConsole.push('op', parts);
 }
 window.addEventListener('error', e => {
   mainConsole.push('error', [`${e.message}  @${e.filename}:${e.lineno}`]);
@@ -2090,6 +2102,7 @@ function markDirty(v) {
  */
 function newDocument(w, h, opts = {}) {
   doc = new Doc(w, h, { background: opts.background });
+  op('新建文档', w + '×' + h + (opts.background === 'transparent' ? ' 透明' : ''));
 
   hk.doc = doc;
   hk.canvas = null;

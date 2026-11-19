@@ -9,6 +9,7 @@ const MAX_LOG = 800;
 
 const state = {
   tab: 'log',
+  filter: 'all',
   logs: [],
   paused: false,
   snap: null,
@@ -37,6 +38,12 @@ host.innerHTML = `
     <button class="dc-tab" data-tab="doc">文档</button>
     <button class="dc-tab" data-tab="act">操作</button>
   </nav>
+  <div class="dc-filters" id="dc-filters">
+    <button class="dc-filter on" data-filter="all">全部操作</button>
+    <button class="dc-filter" data-filter="warn">警告</button>
+    <button class="dc-filter" data-filter="error">错误</button>
+    <button class="dc-filter" data-filter="ext">外接扩展</button>
+  </div>
   <div class="dc-body">
     <div class="dc-pane" id="dc-pane-log"></div>
     <div class="dc-pane" id="dc-pane-perf" hidden></div>
@@ -89,10 +96,25 @@ function pushLocal(level, text) {
 
 /* ---------- 渲染 ---------- */
 
+/* 每一级归到哪个筛选里。
+ * 「外接扩展」是给将来的插件系统留的位，现在还没东西往里写。 */
+const FILTER_OF = {
+  log: 'all', info: 'all', op: 'all',
+  warn: 'warn',
+  error: 'error',
+  ext: 'ext',
+};
+
+function matchFilter(L) {
+  if (state.filter === 'all') return true;
+  return FILTER_OF[L.level] === state.filter;
+}
+
 function renderLog() {
   const el = panes.log;
   el.innerHTML = '';
-  for (const L of state.logs.slice(-300)) {
+  const list = state.logs.filter(matchFilter).slice(-300);
+  for (const L of list) {
     const r = document.createElement('div');
     r.className = 'dc-row dc-' + L.level;
     const t = new Date(L.t);
@@ -103,8 +125,14 @@ function renderLog() {
     el.appendChild(r);
   }
   el.scrollTop = el.scrollHeight;
-  if (!state.logs.length) {
-    el.innerHTML = '<div class="dc-row"><span class="dc-time"></span><span>还没有警告或错误。</span></div>';
+  if (!list.length) {
+    const msg = {
+      all: '还没有日志。',
+      warn: '没有警告。',
+      error: '没有错误。',
+      ext: '还没有外接扩展上报。这个页留给以后的插件系统。',
+    }[state.filter] || '没有内容。';
+    el.innerHTML = `<div class="dc-row"><span class="dc-time"></span><span>${msg}</span></div>`;
   }
 }
 
@@ -207,6 +235,14 @@ function render() {
 }
 
 /* ---------- 交互 ---------- */
+
+host.querySelectorAll('.dc-filter').forEach(b => {
+  b.onclick = () => {
+    state.filter = b.dataset.filter;
+    host.querySelectorAll('.dc-filter').forEach(x => x.classList.toggle('on', x === b));
+    renderLog();
+  };
+});
 
 host.querySelectorAll('.dc-tab').forEach(t => {
   t.onclick = () => {

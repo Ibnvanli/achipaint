@@ -130,3 +130,33 @@ body.dc-window-body {
 
 .dc-link { color: #6fcf97; font-size: 11px; }
 .dc-link.off { color: #ff8a8a; }
+
+/* ---------- 日志筛选 ---------- */
+
+.dc-filters {
+  display: flex;
+  gap: 1px;
+  padding: 4px var(--s-2);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line-1);
+}
+.dc-filter {
+  padding: 3px 9px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.dc-filter:hover { color: var(--fg-0); background: var(--bg-2); }
+.dc-filter.on {
+  background: var(--bg-3);
+  border-color: var(--line-2);
+  color: var(--accent);
+}
+
+/* 操作流水用中性色，别和警告/错误抢眼 */
+.dc-op span:last-child { color: var(--fg-0); }
+.dc-op .dc-time { color: var(--fg-2); }
