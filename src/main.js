@@ -20,7 +20,12 @@ if (/\.Electron/i.test(navigator.userAgent) || navigator.userAgent.includes('Ele
 }
 
 /* ---------- 状态 ---------- */
-const doc = new Doc(2480, 3508);
+/* 尺寸从启动页带过来：index.html?w=2480&h=3508。
+ * 没带参数就退回 A4@300dpi，保证直接打开 index.html 也能用。 */
+const qs = new URLSearchParams(location.search);
+const DW = Math.max(64, Math.min(12000, parseInt(qs.get('w'), 10) || 2480));
+const DH = Math.max(64, Math.min(12000, parseInt(qs.get('h'), 10) || 3508));
+const doc = new Doc(DW, DH);
 const brush = new Brush();
 const history = new History();
 const bus = new Bus();

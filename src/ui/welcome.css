@@ -1,0 +1,209 @@
+/* 启动页样式
+ *
+ * 只用 theme.css 里已有的 token，不另造一套色。启动页和主界面看起来
+ * 得像同一个软件的同一个部分，而不是「欢迎界面」和「工作区」两张皮。
+ */
+
+html, body.welcome {
+  height: 100%;
+  overflow: auto;
+}
+
+body.welcome {
+  background: var(--bg-0);
+  color: var(--fg-0);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--s-5);
+}
+
+.w-wrap {
+  width: 100%;
+  max-width: 980px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+/* ---------- 头部 ---------- */
+
+.w-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  -webkit-app-region: drag;   /* Electron 里整条可拖 */
+}
+
+.w-mark { width: 44px; height: 44px; flex: 0 0 auto; }
+.w-mark svg { width: 100%; height: 100%; display: block; }
+
+.w-id h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: .01em;
+}
+.w-id p {
+  margin: 2px 0 0;
+  font-size: var(--t-s);
+  color: var(--fg-2);
+}
+
+.w-ver {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: var(--t-s);
+  color: var(--fg-2);
+}
+
+/* ---------- 两栏 ---------- */
+
+.w-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: var(--s-5);
+  align-items: start;
+}
+
+.w-col h2 {
+  margin: 0 0 var(--s-3);
+  font-size: var(--t-s);
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+}
+
+/* ---------- 预设卡片 ---------- */
+
+.w-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--s-2);
+}
+
+.w-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--s-3);
+  text-align: left;
+  background: var(--bg-1);
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-m);
+  color: var(--fg-0);
+  font: inherit;
+  cursor: pointer;
+  transition: background .12s, border-color .12s, transform .08s;
+}
+
+.w-card:hover {
+  background: var(--bg-2);
+  border-color: var(--accent);
+}
+.w-card:active { transform: translateY(1px); }
+
+.w-card .n {
+  font-size: var(--t-m);
+  font-weight: 600;
+}
+.w-card .d {
+  font-family: var(--mono);
+  font-size: var(--t-s);
+  color: var(--fg-2);
+}
+.w-card .m {
+  margin-top: var(--s-1);
+  font-size: var(--t-s);
+  color: var(--fg-2);
+  opacity: .85;
+}
+
+/* 内存吃紧的那几档给个提示色，8GB 机器上很现实 */
+.w-card.heavy .m { color: #d99a4e; opacity: 1; }
+
+/* 按比例画的小样，让人一眼看出是横是竖 */
+.w-thumb {
+  height: 42px;
+  margin-bottom: var(--s-2);
+  display: flex;
+  align-items: flex-end;
+}
+.w-thumb i {
+  display: block;
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  border-radius: 1px;
+}
+
+/* ---------- 自定义 ---------- */
+
+.w-custom {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+  font-size: var(--t-s);
+  color: var(--fg-1);
+}
+.w-custom label { flex: 0 0 auto; }
+
+.w-custom input {
+  width: 84px;
+  height: 26px;
+  padding: 0 var(--s-2);
+  background: var(--bg-2);
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-s);
+  color: var(--fg-0);
+  font-family: var(--mono);
+  font-size: var(--t-s);
+  outline: none;
+}
+.w-custom input:focus { border-color: var(--accent); }
+.w-custom .w-times { color: var(--fg-2); }
+
+.w-hint {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-s);
+  color: var(--fg-2);
+  min-height: 18px;
+}
+
+/* ---------- 右栏 ---------- */
+
+.w-empty {
+  padding: var(--s-4);
+  background: var(--bg-1);
+  border: 1px dashed var(--line-2);
+  border-radius: var(--r-m);
+}
+.w-empty p { margin: 0 0 var(--s-2); font-size: var(--t-m); }
+.w-empty p:last-child { margin-bottom: 0; }
+.w-dim { color: var(--fg-2); font-size: var(--t-s) !important; line-height: 1.6; }
+
+.w-foot {
+  margin-top: var(--s-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+.w-kv {
+  display: flex;
+  gap: var(--s-2);
+  font-size: var(--t-s);
+}
+.w-kv span { flex: 0 0 44px; color: var(--fg-2); }
+.w-kv b { font-weight: 500; color: var(--fg-1); }
+
+/* Electron 里红绿灯会盖住左上角，让一下 */
+html.electron body.welcome { padding-left: 96px; }
+html.electron .w-head { -webkit-app-region: drag; }
+html.electron .w-card,
+html.electron .w-custom input,
+html.electron .w-custom button { -webkit-app-region: no-drag; }
+
+@media (max-width: 760px) {
+  .w-cols { grid-template-columns: 1fr; }
+}

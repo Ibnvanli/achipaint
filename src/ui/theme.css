@@ -129,7 +129,7 @@ html.electron .titlebar select {
 }
 .btn:hover { background: var(--bg-3); border-color: var(--line-2); }
 .btn:active { transform: translateY(1px); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #141413; font-weight: 600; }
 .btn.primary:hover { background: var(--accent-dim); border-color: var(--accent-dim); }
 .btn.icon { width: 28px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
 
