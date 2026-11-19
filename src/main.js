@@ -10,6 +10,8 @@ import { DEFAULT_SWATCHES } from './core/color.js';
 import { Slider } from './ui/widgets.js';
 import { ColorPicker } from './ui/colorpicker.js';
 import { Splash } from './ui/splash.js';
+import { serialize, parse, AchiFileError } from './core/format.js';
+import { saveFile, openFile } from './platform/fileio.js';
 import pngExporter from './plugins/export-png.js';
 
 const $ = id => document.getElementById(id);
@@ -35,6 +37,7 @@ const bus = new Bus();
 const host = new PluginHost(bus);
 host.register(pngExporter);
 
+let docName = '未命名';
 let tool = 'brush';
 let stroke = null;
 let pending = null;
@@ -948,6 +951,8 @@ window.addEventListener('keydown', e => {
     else { if (history.undo(doc.layer.canvas)) redraw(); }
   }
   const k = e.key.toLowerCase();
+  if (meta && k === 's') { e.preventDefault(); doSave(e.shiftKey); return; }
+  if (meta && k === 'o') { e.preventDefault(); doOpen(); return; }
   if (!meta && TOOL_KEYS[k]) { setTool(TOOL_KEYS[k]); }
   if (!meta && k === 'x') { swapColors(); }
   if (e.key === 'Escape') {
@@ -1090,6 +1095,113 @@ picker.resize(wheelSizeFor(sidebarW));   // 存过宽度的话，色轮一开始
   });
 })();
 
+/* ---------- 保存 / 打开 ----------
+ * 打开时最关键的一条：**先完整解析成功，再替换当前文档**。
+ * 解析中途抛异常的话，用户手上这张画一个字都不会动。
+ */
+/* 轻量提示条。不能写状态栏 —— paint() 每帧都会把 st-mem 改回「撤销 X MB」，
+ * 错误信息一帧就被冲掉了。 */
+function toast(msg, kind) {
+  let el = document.getElementById('achi-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'achi-toast';
+    el.className = 'toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.toggle('error', kind === 'error');
+  el.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.classList.remove('show'), kind === 'error' ? 7000 : 3200);
+}
+
+function showFileError(title, err) {
+  const detail = err instanceof AchiFileError
+    ? `[${err.code}] ${err.message}`
+    : String(err && err.message || err);
+  console.error(title, err);
+  toast(title + '：' + detail, 'error');
+}
+
+function setDocName(name) {
+  docName = name || '未命名';
+  const el = $('docinfo');
+  if (el) el.textContent = docName;
+}
+
+async function doSave(forceDialog = false) {
+  const btn = $('btn-save');
+  const old = btn.textContent;
+  btn.textContent = '保存中…';
+  btn.disabled = true;
+  try {
+    const blob = await serialize(doc, {
+      app: '0.1.0',
+      brush: {
+        size: brush.size, opacity: brush.opacity, flow: brush.flow,
+        hardness: brush.hardness, spacing: brush.spacing, stabilize: brush.stabilize,
+        color: brush.color,
+      },
+    });
+    const r = await saveFile(blob, { name: docName, forceDialog });
+    if (r.saved) {
+      // 保存成功才改名字；下载兜底时保留原名
+      if (r.where !== 'download') setDocName(r.name.replace(/\.achi$/i, ''));
+    }
+    return r.saved;
+  } catch (e) {
+    showFileError('保存失败', e);
+    return false;
+  } finally {
+    btn.textContent = old;
+    btn.disabled = false;
+  }
+}
+
+async function doOpen() {
+  const btn = $('btn-open');
+  const old = btn.textContent;
+  btn.textContent = '打开中…';
+  btn.disabled = true;
+  try {
+    const picked = await openFile();
+    if (!picked) return false;
+
+    const { doc: loaded, warnings } = await parse(picked.buffer);
+
+    /* —— 到这里才动当前文档 —— */
+    doc = loaded;
+    hk.doc = doc;
+    hk.canvas = null;
+    hk.current = null;
+
+    history.stack = [];
+    history.index = -1;
+    history.bytes = 0;
+    stroke = null;
+    pending = null;
+    gesture = null;
+
+    setDocName(picked.name.replace(/\.achi$/i, ''));
+    $('st-size').textContent = doc.w + ' × ' + doc.h;
+    renderLayers();
+    requestPaint();
+
+    if (warnings && warnings.length) console.warn('[打开] 有告警：', warnings);
+    return true;
+  } catch (e) {
+    showFileError('打开失败', e);
+    return false;
+  } finally {
+    btn.textContent = old;
+    btn.disabled = false;
+  }
+}
+
+$('btn-save').onclick = () => doSave(false);
+$('btn-open').onclick = () => doOpen();
+
 /* ---------- 新建文档 ----------
  * 直接把 doc 换成新的，然后把唯一一个外部引用（hk.doc）接上。
  * hk 的 surface 尺寸变了会在 ensureSurface 里自己重建；同尺寸时要手动丢弃，
@@ -1110,6 +1222,7 @@ function newDocument(w, h) {
   pending = null;
   gesture = null;
 
+  setDocName('未命名');
   $('st-size').textContent = doc.w + ' × ' + doc.h;
   fit();
   renderLayers();

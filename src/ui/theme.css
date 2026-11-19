@@ -132,6 +132,7 @@ html.electron .titlebar select {
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #141413; font-weight: 600; }
 .btn.primary:hover { background: var(--accent-dim); border-color: var(--accent-dim); }
 .btn.icon { width: 28px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.tb-sep { width: 1px; height: 16px; background: var(--line-2); margin: 0 2px; }
 
 /* ---------- 左：工具栏 ---------- */
 .tbtn {
@@ -405,3 +406,25 @@ canvas { display: block; position: absolute; inset: 0; }
 
 /* 状态条 */
 .statusbar .sep { width: 1px; height: 12px; background: var(--line-2); }
+
+/* ---------- 提示条 ---------- */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 58px;
+  transform: translateX(-50%) translateY(8px);
+  max-width: 70vw;
+  padding: var(--s-2) var(--s-3);
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-s);
+  color: var(--fg-0);
+  font-size: var(--t-s);
+  line-height: 1.5;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .16s ease, transform .16s ease;
+  z-index: 200;
+}
+.toast.show { opacity: 1; transform: translateX(-50%); }
+.toast.error { border-color: #e06a6a; color: #ffb9b9; background: #2a1c1c; }

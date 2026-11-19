@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, protocol, shell } = require('electron');
+const { app, BrowserWindow, Menu, protocol, dialog, ipcMain, shell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const ROOT = path.join(__dirname);
@@ -10,12 +10,53 @@ function createWindow() {
     width: 1440, height: 900, minWidth: 900, minHeight: 600,
     backgroundColor: '#141413',
     titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 13 },
-    webPreferences: { nodeIntegration: false, contextIsolation: true, backgroundThrottling: false },
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      backgroundThrottling: false,
+      preload: path.join(__dirname, 'preload.js'),
+    },
   });
   win.loadURL(`${SCHEME}://local/src/index.html`);
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   return win;
 }
+/* ---------- 文件读写 ----------
+ * 渲染进程把整份 .achi 的字节传过来，这里只负责选路径和落盘。
+ * 写的时候先写 .tmp 再原子改名：中途断电不会留下半个文件把原文件顶掉。 */
+ipcMain.handle('achi:save', async (event, bytes, suggestedName) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: '保存画布',
+    defaultPath: suggestedName,
+    filters: [{ name: 'AchiPaint 画布', extensions: ['achi'] }],
+  });
+  if (canceled || !filePath) return null;
+
+  const target = filePath.toLowerCase().endsWith('.achi') ? filePath : filePath + '.achi';
+  const tmp = target + '.tmp';
+  const buf = Buffer.from(bytes);
+  await fs.writeFile(tmp, buf);
+  await fs.rename(tmp, target);   // 原子替换
+  return target;
+});
+
+ipcMain.handle('achi:open', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: '打开画布',
+    properties: ['openFile'],
+    filters: [{ name: 'AchiPaint 画布', extensions: ['achi'] }],
+  });
+  if (canceled || !filePaths.length) return null;
+  const buf = await fs.readFile(filePaths[0]);
+  return {
+    path: filePaths[0],
+    name: path.basename(filePaths[0]),
+    data: new Uint8Array(buf).buffer,
+  };
+});
+
 app.whenReady().then(() => {
   protocol.handle(SCHEME, async (req) => {
     try {

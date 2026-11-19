@@ -10,3 +10,6 @@ node_modules/
 
 # 构建产物
 /native/build/
+
+# 保存的测试文件
+*.achi

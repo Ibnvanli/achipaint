@@ -21,6 +21,8 @@ echo "1/6 准备打包源"
 rm -rf "$OUT"
 rm -rf /tmp/achi-electron-src && mkdir -p /tmp/achi-electron-src
 cp native/electron/main.js /tmp/achi-electron-src/electron-main.js
+# preload 必须一起进包，否则 contextBridge 不生效，window.achiFile 是 undefined
+cp native/electron/preload.js /tmp/achi-electron-src/preload.js
 cp build/icon.icns /tmp/achi-electron-src/icon.icns
 rm -rf /tmp/achi-electron-src/src && cp -R src /tmp/achi-electron-src/src
 cat > /tmp/achi-electron-src/package.json <<'JSON'
