@@ -69,6 +69,81 @@ ipcMain.handle('achi:open', async (event) => {
   };
 });
 
+/* 菜单项都对应渲染进程的一个命令 id（见 src/ui/menubar.js 的 COMMANDS）。
+ * 改这里记得同步那张表，否则点了没反应。
+ *
+ * 注意：⌘Z / ⌘S / ⌘O 一旦绑到菜单，页面就再也收不到这些键 ——
+ * 所以必须真的把命令转发下去，不能只摆个占位。 */
+function buildMenuTemplate() {
+  const send = id => () => {
+    const w = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+    if (w) w.webContents.send('achi:menu', id);
+  };
+
+  return [
+    {
+      label: 'AchiPaint',
+      submenu: [
+        { role: 'about', label: '关于 AchiPaint' },
+        { type: 'separator' },
+        { role: 'hide', label: '隐藏 AchiPaint' },
+        { role: 'hideOthers', label: '隐藏其他' },
+        { role: 'unhide', label: '全部显示' },
+        { type: 'separator' },
+        { role: 'quit', label: '退出 AchiPaint' },
+      ],
+    },
+    {
+      label: '文件',
+      submenu: [
+        { label: '新建', accelerator: 'CmdOrCtrl+N', click: send('file:new') },
+        { label: '打开…', accelerator: 'CmdOrCtrl+O', click: send('file:open') },
+        { type: 'separator' },
+        { label: '保存', accelerator: 'CmdOrCtrl+S', click: send('file:save') },
+        { label: '另存为…', accelerator: 'Shift+CmdOrCtrl+S', click: send('file:saveAs') },
+        { type: 'separator' },
+        { label: '导出 PNG…', accelerator: 'Shift+CmdOrCtrl+E', click: send('file:export') },
+      ],
+    },
+    {
+      label: '编辑',
+      submenu: [
+        { label: '撤销', accelerator: 'CmdOrCtrl+Z', click: send('edit:undo') },
+        { label: '重做', accelerator: 'Shift+CmdOrCtrl+Z', click: send('edit:redo') },
+        { type: 'separator' },
+        // 不绑 Esc：绑了会全局吃掉这个键，页面里的「取消选区 / 退出蒙版」就失效
+        { label: '取消选区', click: send('edit:clearSel') },
+        { type: 'separator' },
+        { role: 'cut', label: '剪切' },
+        { role: 'copy', label: '复制' },
+        { role: 'paste', label: '粘贴' },
+        { role: 'selectAll', label: '全选' },
+      ],
+    },
+    {
+      label: '视图',
+      submenu: [
+        { label: '适应窗口', accelerator: 'CmdOrCtrl+0', click: send('view:fit') },
+        { label: '实际大小', accelerator: 'CmdOrCtrl+1', click: send('view:100') },
+        { type: 'separator' },
+        { label: '放大', accelerator: 'CmdOrCtrl+Plus', click: send('view:in') },
+        { label: '缩小', accelerator: 'CmdOrCtrl+-', click: send('view:out') },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: '进入全屏' },
+      ],
+    },
+    {
+      label: '窗口',
+      submenu: [
+        { role: 'minimize', label: '最小化' },
+        { role: 'zoom', label: '缩放' },
+        { type: 'separator' },
+        { role: 'front', label: '前置全部窗口' },
+      ],
+    },
+  ];
+}
+
 app.whenReady().then(() => {
   protocol.handle(SCHEME, async (req) => {
     try {
@@ -79,11 +154,7 @@ app.whenReady().then(() => {
       return new Response(data, { headers: { 'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream', 'cache-control': 'no-cache, no-store, must-revalidate' } });
     } catch (e) { return new Response(String(e.message), { status: 404 }); }
   });
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { role: 'appMenu' }, { role: 'fileMenu' },
-    { label: '编辑', submenu: [{ role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-    { role: 'viewMenu' }, { role: 'windowMenu' },
-  ]));
+  Menu.setApplicationMenu(Menu.buildFromTemplate(buildMenuTemplate()));
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });

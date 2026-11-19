@@ -7,4 +7,6 @@ contextBridge.exposeInMainWorld('achiFile', {
   open: () => ipcRenderer.invoke('achi:open'),
   read: (filePath) => ipcRenderer.invoke('achi:read', filePath),
   remove: (filePath) => ipcRenderer.invoke('achi:delete', filePath),
+  // 原生菜单点下来的命令
+  onMenu: (cb) => ipcRenderer.on('achi:menu', (_e, id) => cb(id)),
 });

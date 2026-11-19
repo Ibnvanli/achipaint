@@ -10,6 +10,7 @@ import { DEFAULT_SWATCHES } from './core/color.js';
 import { Slider } from './ui/widgets.js';
 import { ColorPicker } from './ui/colorpicker.js';
 import { Splash, pushRecent, removeRecent } from './ui/splash.js';
+import { MenuBar } from './ui/menubar.js';
 import { serialize, parse, AchiFileError } from './core/format.js';
 import { saveFile, openFile, openByPath, canOpenByPath, deleteFile } from './platform/fileio.js';
 import pngExporter from './plugins/export-png.js';
@@ -284,7 +285,7 @@ view.addEventListener('pointerdown', e => {
   // 画笔走 hokusai（.myb 笔刷）；橡皮和「hokusai 没就位」都还走内置引擎
   if (tool === 'brush' && hk.ready) {
     const ok = hk.begin(p.x, p.y, pressure, tiltOpts(e, p));
-    if (ok) { requestPaint(); bus.emit('stroke:begin', { x: p.x, y: p.y }); return; }
+    if (ok) { markDirty(true); requestPaint(); bus.emit('stroke:begin', { x: p.x, y: p.y }); return; }
   }
 
   stroke = new Stroke(paintBrush, layer);
@@ -960,9 +961,7 @@ document.querySelectorAll('.panel > h3').forEach(h => {
 $('btn-add-layer').onclick = () => { doc.addLayer(); renderLayers(); redraw(); };
 $('btn-add-group').onclick = () => { doc.addGroup(); renderLayers(); redraw(); };
 
-/* ---------- 撤销 ---------- */
-$('btn-undo').onclick = () => { if (history.undo(doc.layer.canvas)) redraw(); };
-$('btn-redo').onclick = () => { if (history.redo(doc.layer.canvas)) redraw(); };
+/* 撤销/重做的按钮绑定统一放在下面的命令分发处，别在这里再绑一次 */
 
 window.addEventListener('keydown', e => {
   const meta = e.metaKey || e.ctrlKey;
@@ -983,17 +982,17 @@ window.addEventListener('keydown', e => {
 });
 
 /* ---------- 导出 ---------- */
-$('btn-export').onclick = async () => {
+async function doExport() {
   const ex = host.exporters.get('png');
   if (!ex) return;
   const blob = await ex.run(doc);
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'achipaint.png';
+  a.download = (docName === '未命名' ? 'achipaint' : docName) + '.png';
   a.click();
   URL.revokeObjectURL(a.href);
   bus.emit('export:done', { id: 'png' });
-};
+}
 
 /* ---------- 调试钩子（开发期用，方便在控制台查状态） ---------- */
 /* doc 是可重建的（启动浮层选尺寸会换掉它），所以这里必须用 getter，
@@ -1169,6 +1168,7 @@ async function doSave(forceDialog = false) {
     if (r.saved) {
       // 保存成功才改名字；下载兜底时保留原名
       if (!r.download) setDocName(r.name.replace(/\.achi$/i, ''));
+      markDirty(false);
       pushRecent({ name: r.name, path: r.path || null, w: doc.w, h: doc.h });
     }
     return r.saved;
@@ -1196,6 +1196,7 @@ function installDocument(loaded, name, path) {
   gesture = null;
 
   setDocName(name.replace(/\.achi$/i, ''));
+  markDirty(false);
   $('st-size').textContent = doc.w + ' × ' + doc.h;
   renderLayers();
 
@@ -1232,8 +1233,74 @@ async function doOpen(fromPath) {
 }
 
 
-$('btn-save').onclick = () => doSave(false);
-$('btn-open').onclick = () => doOpen();
+/* ---------- 命令 ----------
+ * 标题栏图标、网页菜单、Electron 原生菜单、键盘快捷键，最后都汇到这一个分发器。
+ * 加新命令只改这里 + ui/menubar.js 的 COMMANDS。
+ */
+let splashRef = null;
+
+function openNewDialog() {
+  if (splashRef) {
+    splashRef.show();
+    splashRef.backToList();
+    splashRef.refreshRecent();
+  }
+}
+
+function runCommand(id) {
+  switch (id) {
+    case 'file:new':     openNewDialog(); return;
+    case 'file:open':    doOpen(); return;
+    case 'file:save':    doSave(false); return;
+    case 'file:saveAs':  doSave(true); return;
+    case 'file:export':  doExport(); return;
+    case 'edit:undo':    doUndo(); return;
+    case 'edit:redo':    doRedo(); return;
+    case 'edit:clearSel':
+      if (doc.selection) { doc.selection = null; requestPaint(); }
+      return;
+    case 'view:fit':     fit(); redraw(); return;
+    case 'view:100':     setZoom(1); return;
+    case 'view:in':      setZoom(doc.view.zoom * 1.25); return;
+    case 'view:out':     setZoom(doc.view.zoom / 1.25); return;
+    default: console.warn('未知命令', id);
+  }
+}
+
+/* 以画布中心为基准改缩放，别让内容跑出视野 */
+function setZoom(z) {
+  const stage = $('stage').getBoundingClientRect();
+  const cx = (stage.width / 2 - doc.view.x) / doc.view.zoom;
+  const cy = (stage.height / 2 - doc.view.y) / doc.view.zoom;
+  const next = Math.max(0.02, Math.min(16, z));
+  doc.view.zoom = next;
+  doc.view.x = stage.width / 2 - cx * next;
+  doc.view.y = stage.height / 2 - cy * next;
+  redraw();
+}
+
+function doUndo() { if (history.undo(doc.activeLeaf.canvas)) redraw(); }
+function doRedo() { if (history.redo(doc.activeLeaf.canvas)) redraw(); }
+
+$('btn-new').onclick = () => runCommand('file:new');
+$('btn-save').onclick = () => runCommand('file:save');
+$('btn-open').onclick = () => runCommand('file:open');
+$('btn-undo').onclick = () => runCommand('edit:undo');
+$('btn-redo').onclick = () => runCommand('edit:redo');
+$('btn-export').onclick = () => runCommand('file:export');
+
+const menubar = new MenuBar($('tb-menus'), runCommand);
+
+/* Electron 原生菜单点下来的命令走这里 */
+if (window.achiFile && window.achiFile.onMenu) {
+  window.achiFile.onMenu(id => runCommand(id));
+}
+
+/* 未保存标记：目前只在保存/新建/打开时清，笔一落就算脏 */
+function markDirty(v) {
+  const el = $('tb-dirty');
+  if (el) el.toggleAttribute('hidden', !v);
+}
 
 /* ---------- 新建文档 ----------
  * 直接把 doc 换成新的，然后把唯一一个外部引用（hk.doc）接上。
@@ -1256,6 +1323,7 @@ function newDocument(w, h, opts = {}) {
   gesture = null;
 
   setDocName(opts.name || '未命名');
+  markDirty(false);
   $('st-size').textContent = doc.w + ' × ' + doc.h;
   fit();
   renderLayers();
@@ -1273,9 +1341,9 @@ setTool('brush');
 $('st-size').textContent = doc.w + ' × ' + doc.h;
 initHokusai();
 
-/* 没在链接里指定尺寸 → 先弹启动浮层 */
-if (!HAS_SIZE) {
-  const splash = new Splash({
+/* 启动浮层总是建出来（菜单里的「新建」要用它），只是不一定显示 */
+{
+  const splash = splashRef = new Splash({
     defaultSize: { w: DW, h: DH },
     canOpenRecent: canOpenByPath(),
     onPick: (w, h, extra) => newDocument(w, h, extra || {}),
@@ -1296,5 +1364,5 @@ if (!HAS_SIZE) {
     onOpen: async () => { if (await doOpen()) splash.hide(); },
     onOpenRecent: async (entry) => { if (await doOpen(entry.path)) splash.hide(); },
   });
-  splash.show();
+  if (!HAS_SIZE) splash.show();
 }
