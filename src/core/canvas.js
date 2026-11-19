@@ -352,6 +352,32 @@ export class Doc {
    * 组只有在「不透明度 < 1」或「混合模式不是 normal」时才需要隔离缓冲；
    * 否则直接摊平，省掉一次 256×256 的搬运。
    */
+  /* 把某层按 (dx,dy) 偏移画进「当前块」。
+   *
+   * 注意：不能拿 _drawStack 传进来的 rx/ry 算，那个对 doc.off 一直是 0（世界原点）；
+   * 要用 this._key 反推当前块的坐标，否则算出来永远是画面左上角那一带的源块。
+   *
+   * 只遍历真正可能重叠的源块（最多 3×3），不会退化成 O(瓦片数)。
+   */
+  _drawOffsetTile(n, ctx, dx, dy) {
+    const T = TILE;
+    const [cc, cr] = this._key.split(',').map(Number);
+    const bx = cc * T, by = cr * T;          // 当前块的世界坐标
+
+    const c0 = Math.floor((bx - dx) / T) - 1;
+    const c1 = Math.floor((bx - dx + T) / T) + 1;
+    const r0 = Math.floor((by - dy) / T) - 1;
+    const r1 = Math.floor((by - dy + T) / T) + 1;
+
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        const src = n.canvas.tiles.get(c + ',' + r);
+        if (!src) continue;
+        ctx.drawImage(src.canvas, c * T + dx, r * T + dy);
+      }
+    }
+  }
+
   _drawStack(nodes, ctx, rx, ry, depth, scratchFor) {
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
@@ -364,11 +390,18 @@ export class Doc {
         const masked = n.mask && n.mask.tiles.size > 0;
 
         if (!masked) {
-          const t = n.canvas.tiles.get(this._key);
-          if (!t) continue;
           ctx.globalAlpha = n.opacity;
           ctx.globalCompositeOperation = n.mode;
-          ctx.drawImage(t.canvas, t.col * TILE - rx + dx, t.row * TILE - ry + dy);
+          if (off && (dx || dy)) {
+            /* 拖动预览：目标块可能要从**邻居块**取内容。
+             * 只画 this._key 那一块的话，偏移量不是 256 的整数倍时
+             * 块与块之间会裂开、拖影（这就是「拖动后残留」的原因）。 */
+            this._drawOffsetTile(n, ctx, dx, dy);
+          } else {
+            const t = n.canvas.tiles.get(this._key);
+            if (!t) continue;
+            ctx.drawImage(t.canvas, t.col * TILE - rx + dx, t.row * TILE - ry + dy);
+          }
           continue;
         }
 
@@ -381,8 +414,11 @@ export class Doc {
         sc.globalCompositeOperation = 'source-over';
         sc.clearRect(0, 0, s.width, s.height);
 
-        const t = n.canvas.tiles.get(this._key);
-        if (t) sc.drawImage(t.canvas, t.col * TILE - rx + dx, t.row * TILE - ry + dy);
+        if (off && (dx || dy)) this._drawOffsetTile(n, sc, dx, dy);
+        else {
+          const t = n.canvas.tiles.get(this._key);
+          if (t) sc.drawImage(t.canvas, t.col * TILE - rx + dx, t.row * TILE - ry + dy);
+        }
 
         const mt = n.mask.tiles.get(this._key);
         if (mt) {
