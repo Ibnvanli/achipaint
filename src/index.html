@@ -84,6 +84,15 @@
   <div class="stage" id="stage">
     <canvas id="view"></canvas>
 
+    <!-- 浮动选区的旋转条：只有拎起一块时才出现 -->
+    <div class="float-bar" id="float-bar" hidden>
+      <span class="fb-label">旋转</span>
+      <input type="range" id="fb-rotate" min="-180" max="180" step="0.5" value="0">
+      <span class="fb-val" id="fb-val">0°</span>
+      <button class="fb-reset" id="fb-reset" title="归零">↺</button>
+      <button class="fb-done" id="fb-done" title="落回图层 (Enter)">放置</button>
+    </div>
+
     <!-- 导航器：整张画的缩略图 + 当前视口框 -->
     <div class="navigator" id="navigator" title="点击或拖动跳转">
       <div class="nav-inner">

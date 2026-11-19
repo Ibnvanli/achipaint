@@ -176,6 +176,15 @@ function paint() {
     vctx.imageSmoothingEnabled = zoom < 1;
     vctx.drawImage(doc.off, sx, sy, ex - sx, ey - sy, sx, sy, ex - sx, ey - sy);
 
+    // 浮动选区画在最上面，跟手走
+    if (floating) {
+      vctx.save();
+      vctx.translate(floating.x + floating.w / 2, floating.y + floating.h / 2);
+      vctx.rotate(floating.angle * Math.PI / 180);
+      vctx.drawImage(floating.canvas, -floating.w / 2, -floating.h / 2);
+      vctx.restore();
+    }
+
     // 边框
     vctx.strokeStyle = 'rgba(255,255,255,.18)';
     vctx.lineWidth = 1 / zoom;
@@ -259,6 +268,25 @@ view.addEventListener('pointerdown', e => {
     return;
   }
   if (tool === 'select') {
+    // 已经浮着一块：在它里面就拖，在外面就落下并重新框选
+    if (floating) {
+      if (p.x >= floating.x && p.x <= floating.x + floating.w
+        && p.y >= floating.y && p.y <= floating.y + floating.h) {
+        gesture = { kind: 'float-move', x0: p.x, y0: p.y, fx: floating.x, fy: floating.y };
+        return;
+      }
+      commitFloating();
+    }
+
+    // 有选区，且点在选区里 → 拎起来
+    const sel = doc.selection;
+    if (sel && p.x >= sel.x0 && p.x <= sel.x1 && p.y >= sel.y0 && p.y <= sel.y1) {
+      if (liftSelection()) {
+        gesture = { kind: 'float-move', x0: p.x, y0: p.y, fx: floating.x, fy: floating.y };
+      }
+      return;
+    }
+
     gesture = { kind: 'select', x0: p.x, y0: p.y, rect: null };
     requestPaint();
     return;
@@ -681,6 +709,127 @@ window.addEventListener('drop', async e => {
   }
 });
 
+/* ---------- 浮动选区 ----------
+ * 框选一块，把它从图层里拎出来：可以拖、可以转，松手才落回去。
+ * 这是「移动单个/多个笔画」的现实做法 —— 底子是像素，没有笔画对象，
+ * 所以选择的范围就是一块内容，而不是某一笔。
+ */
+let floating = null;   // { canvas, x, y, w, h, angle, tc, rect, moved }
+
+function newCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, w);
+  c.height = Math.max(1, h);
+  return c;
+}
+
+/* 把选区那一块从图层搬到浮动画布上，并清空原处 */
+function liftSelection() {
+  const sel = doc.selection;
+  // paintTarget 本身就是 TileCanvas（不是 Layer），别再取一次 .canvas
+  const tc = doc.paintTarget;
+  if (!sel || !tc) return false;
+
+  const x = Math.round(sel.x0), y = Math.round(sel.y0);
+  const w = Math.max(1, Math.round(sel.x1 - sel.x0));
+  const h = Math.max(1, Math.round(sel.y1 - sel.y0));
+  if (w < 1 || h < 1) return false;
+
+  const cv = newCanvas(w, h);
+  const fctx = cv.getContext('2d');
+
+  // 从图层逐块拷过来（瓦片是 256×256，按块坐标搬）
+  for (let r = Math.floor(y / TILE); r <= Math.floor((y + h - 1) / TILE); r++) {
+    for (let c = Math.floor(x / TILE); c <= Math.floor((x + w - 1) / TILE); c++) {
+      const t = tc.tiles.get(c + ',' + r);
+      if (!t) continue;
+      fctx.drawImage(t.canvas, c * TILE - x, r * TILE - y);
+    }
+  }
+
+  // 原地挖掉
+  const pending = history.beginStroke(tc);
+  history.grabRegion(pending, x, y, x + w, y + h);
+  tc.forEachTileInBounds(x, y, x + w - 1, y + h - 1, ctx => {
+    ctx.clearRect(x, y, w, h);
+  });
+  tc.markDirty(x, y, x + w, y + h);
+
+  floating = { canvas: cv, x, y, w, h, angle: 0, tc, rect: { x, y, w, h }, pending, moved: true };
+  doc.selection = null;
+  syncFloatBar();
+  redraw();
+  return true;
+}
+
+/* 落回图层：先按当前角度画进临时图，再贴回去 */
+function commitFloating() {
+  if (!floating) return;
+  const f = floating;
+  floating = null;
+  syncFloatBar();
+
+  const tc = f.tc;
+  const tmp = newCanvas(f.w, f.h);
+  const tctx = tmp.getContext('2d');
+  tctx.translate(f.w / 2, f.h / 2);
+  tctx.rotate(f.angle * Math.PI / 180);
+  tctx.drawImage(f.canvas, -f.w / 2, -f.h / 2);
+
+  tc.forEachTileInBounds(f.x, f.y, f.x + f.w - 1, f.y + f.h - 1, ctx => {
+    ctx.drawImage(tmp, f.x, f.y);
+  });
+  tc.markDirty(0, 0, doc.w, doc.h);
+
+  if (f.pending) history.commit(f.pending);
+  redraw();
+  toast('已放置');
+}
+
+/* 取消：原样放回 */
+function cancelFloating() {
+  if (!floating) return;
+  const f = floating;
+  floating = null;
+  syncFloatBar();
+  f.tc.forEachTileInBounds(f.x, f.y, f.x + f.w - 1, f.y + f.h - 1, ctx => {
+    ctx.drawImage(f.canvas, f.x, f.y);
+  });
+  f.tc.markDirty(0, 0, doc.w, doc.h);
+  redraw();
+}
+
+/* 浮动的旋转条 */
+const floatBar = $('float-bar');
+const fbRotate = $('fb-rotate');
+const fbVal = $('fb-val');
+
+function syncFloatBar() {
+  if (!floatBar) return;
+  const on = !!floating && !!floating.moved;
+  floatBar.toggleAttribute('hidden', !on);
+  if (on) {
+    fbRotate.value = String(Math.round(floating.angle * 2) / 2);
+    fbVal.textContent = (floating.angle > 0 ? '+' : '') + Math.round(floating.angle) + '°';
+  }
+}
+
+if (fbRotate) {
+  fbRotate.addEventListener('input', () => {
+    if (!floating) return;
+    floating.angle = Number(fbRotate.value);
+    fbVal.textContent = (floating.angle > 0 ? '+' : '') + Math.round(floating.angle) + '°';
+    requestPaint();
+  });
+  $('fb-reset').onclick = () => {
+    if (!floating) return;
+    floating.angle = 0;
+    syncFloatBar();
+    requestPaint();
+  };
+  $('fb-done').onclick = () => { if (floating) commitFloating(); };
+}
+
 /* ---------- 旋转 ----------
  * 拖动时不重采样（8.7M 像素每帧都做会卡死），只显示角度；
  * 松手才真正转一次。
@@ -880,6 +1029,14 @@ function gestureMove(e) {
     return;
   }
 
+  if (g.kind === 'float-move') {
+    floating.x = Math.round(g.fx + (p.x - g.x0));
+    floating.y = Math.round(g.fy + (p.y - g.y0));
+    floating.moved = true;
+    requestPaint();
+    return;
+  }
+
   if (g.kind === 'select') {
     g.rect = {
       x0: Math.min(g.x0, p.x), y0: Math.min(g.y0, p.y),
@@ -917,6 +1074,11 @@ function gestureEnd() {
   const g = gesture;
   gesture = null;
   if (!g) return;
+
+  if (g.kind === 'float-move') {
+    requestPaint();
+    return;
+  }
 
   if (g.kind === 'select') {
     const r = g.rect;
@@ -1375,7 +1537,9 @@ window.addEventListener('keydown', e => {
   if (meta && e.shiftKey && k === 'o') { e.preventDefault(); toggleReference(); return; }
   if (!meta && TOOL_KEYS[k]) { setTool(TOOL_KEYS[k]); }
   if (!meta && k === 'x') { swapColors(); }
+  if (e.key === 'Enter' && floating) { e.preventDefault(); commitFloating(); return; }
   if (e.key === 'Escape') {
+    if (floating) { cancelFloating(); return; }
     if (doc.selection) { doc.selection = null; requestPaint(); }
     if (doc.maskMode) setMaskMode(false);
   }
