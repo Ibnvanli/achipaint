@@ -24,6 +24,7 @@ export const COMMANDS = [
   { id: 'view:100', group: 'view', label: '实际大小', key: '⌘1' },
   { id: 'view:in', group: 'view', label: '放大', key: '⌘+' },
   { id: 'view:out', group: 'view', label: '缩小', key: '⌘-' },
+  { id: 'view:console', group: 'view', label: '开发者控制台', key: '⇧⌘D' },
 ];
 
 const ICONS = {

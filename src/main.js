@@ -11,6 +11,7 @@ import { Slider } from './ui/widgets.js';
 import { ColorPicker } from './ui/colorpicker.js';
 import { Splash, pushRecent, removeRecent } from './ui/splash.js';
 import { MenuBar } from './ui/menubar.js';
+import { DevConsole } from './ui/devconsole.js';
 import { serialize, parse, AchiFileError } from './core/format.js';
 import { saveFile, openFile, openByPath, canOpenByPath, deleteFile } from './platform/fileio.js';
 import pngExporter from './plugins/export-png.js';
@@ -982,6 +983,7 @@ window.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if (meta && k === 's') { e.preventDefault(); doSave(e.shiftKey); return; }
   if (meta && k === 'o') { e.preventDefault(); doOpen(); return; }
+  if (meta && e.shiftKey && k === 'd') { e.preventDefault(); devconsole.toggle(); return; }
   if (!meta && TOOL_KEYS[k]) { setTool(TOOL_KEYS[k]); }
   if (!meta && k === 'x') { swapColors(); }
   if (e.key === 'Escape') {
@@ -1009,7 +1011,31 @@ async function doExport() {
 window.__achi = {
   get doc() { return doc; },
   brush, history, host, bus, redraw, requestPaint, hk,
-  newDocument,
+  newDocument, doOpen, doSave, doExport, runCommand,
+  // devconsole 在后面才创建，用 getter 避免 TDZ
+  get devconsole() { return devconsole; },
+  isAchiFile, openImageAsDocument,
+
+  /* 控制台里的自测：不经过文件对话框，直接用内存里的数据走一遍真实路径 */
+  async selfTestImage() {
+    const c = document.createElement('canvas');
+    c.width = 320; c.height = 240;
+    const g = c.getContext('2d');
+    g.fillStyle = '#2b6cb0'; g.fillRect(0, 0, 320, 240);
+    g.fillStyle = '#e2453d'; g.fillRect(40, 40, 120, 80);
+    const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    await openImageAsDocument(bytes, '自测图.png');
+    return `成功，新文档 ${doc.w}×${doc.h}，图层 ${doc.root.children.map(n => n.name).join('/')}`;
+  },
+
+  async selfTestRoundtrip() {
+    const blob = await serialize(doc, { app: '0.1.0' });
+    const before = [doc.w, doc.h];
+    const { doc: back } = await parse(await blob.arrayBuffer());
+    const ok = back.w === before[0] && back.h === before[1];
+    return `${blob.size} 字节 · ${before.join('×')} → ${back.w}×${back.h} ${ok ? '一致' : '不一致！'}`;
+  },
 };
 
 /* ---------- hokusai 载入 ---------- */
@@ -1350,6 +1376,7 @@ $('btn-redo').onclick = () => runCommand('edit:redo');
 $('btn-export').onclick = () => runCommand('file:export');
 
 const menubar = new MenuBar($('tb-menus'), runCommand);
+const devconsole = new DevConsole($('devconsole'));
 
 /* Electron 原生菜单点下来的命令走这里 */
 if (window.achiFile && window.achiFile.onMenu) {

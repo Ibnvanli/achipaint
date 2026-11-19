@@ -127,10 +127,14 @@ export async function openFile() {
   if (window.showOpenFilePicker) {
     try {
       const [handle] = await window.showOpenFilePicker({
-        types: [
-          { description: 'AchiPaint 画布', accept: { 'application/x-achipaint': [EXT] } },
-          { description: '图片', accept: { 'image/*': ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'] } },
-        ],
+        // 第一个 type 是默认选中的，合并成一项，否则图片会是灰的
+        types: [{
+          description: 'AchiPaint 画布与图片',
+          accept: {
+            'application/x-achipaint': [EXT],
+            'image/*': ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'],
+          },
+        }],
         multiple: false,
       });
       const file = await handle.getFile();

@@ -58,9 +58,11 @@ ipcMain.handle('achi:open', async (event) => {
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     title: '打开画布',
     properties: ['openFile'],
+    /* 第一个 filter 是对话框默认选中的那个。
+     * 原来第一个只有 achi，结果图片全是灰的、根本点不了 —— 用户以为「导入不了」。
+     * 现在把 .achi 和图片放进同一个 filter，两类文件都能直接选。 */
     filters: [
-      { name: 'AchiPaint 画布', extensions: ['achi'] },
-      { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] },
+      { name: 'AchiPaint 画布与图片', extensions: ['achi', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] },
       { name: '全部文件', extensions: ['*'] },
     ],
   });
@@ -132,6 +134,8 @@ function buildMenuTemplate() {
         { type: 'separator' },
         { label: '放大', accelerator: 'CmdOrCtrl+Plus', click: send('view:in') },
         { label: '缩小', accelerator: 'CmdOrCtrl+-', click: send('view:out') },
+        { type: 'separator' },
+        { label: '开发者控制台', accelerator: 'Shift+CmdOrCtrl+D', click: send('view:console') },
         { type: 'separator' },
         { role: 'togglefullscreen', label: '进入全屏' },
       ],
