@@ -322,6 +322,11 @@ export class Doc {
   /* 把各个图层里积攒的脏块搬到文档级，再统一刷新。 */
   collectDirty() {
     walkLeaves(this.root.children, l => {
+      // 蒙版也要收 —— 只收 l.canvas 的话，在蒙版上画的笔画永远不重合
+      if (l.mask && l.mask.dirty.size) {
+        l.mask.dirty.forEach(k => this.dirtyTiles.add(k));
+        l.mask.dirty.clear();
+      }
       if (l.canvas.dirty.size === 0) return;
       l.canvas.dirty.forEach(k => this.dirtyTiles.add(k));
       l.canvas.dirty.clear();
@@ -359,7 +364,7 @@ export class Doc {
    *
    * 只遍历真正可能重叠的源块（最多 3×3），不会退化成 O(瓦片数)。
    */
-  _drawOffsetTile(n, ctx, dx, dy) {
+  _drawOffsetTile(n, ctx, dx, dy, ox = 0, oy = 0) {
     const T = TILE;
     const [cc, cr] = this._key.split(',').map(Number);
     const bx = cc * T, by = cr * T;          // 当前块的世界坐标
@@ -373,12 +378,19 @@ export class Doc {
       for (let c = c0; c <= c1; c++) {
         const src = n.canvas.tiles.get(c + ',' + r);
         if (!src) continue;
-        ctx.drawImage(src.canvas, c * T + dx, r * T + dy);
+        // ox/oy：目标画布的原点（世界坐标）—— 画进 scratch 时要减掉
+        ctx.drawImage(src.canvas, c * T + dx - ox, r * T + dy - oy);
       }
     }
   }
 
   _drawStack(nodes, ctx, rx, ry, depth, scratchFor) {
+    /* 隔离分支用的是 256×256 的 scratch，而瓦片坐标是世界坐标。
+     * 不换算到「当前块」原点的话，非 (0,0) 的块会被画到 scratch 外面 ——
+     * 表现就是「蒙版 / 组不透明度只有左上角那 256px 是对的」。 */
+    const [bc, br] = this._key ? this._key.split(',').map(Number) : [0, 0];
+    const bx = bc * TILE, by = br * TILE;
+
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
       if (!n.visible) continue;
@@ -396,7 +408,7 @@ export class Doc {
             /* 拖动预览：目标块可能要从**邻居块**取内容。
              * 只画 this._key 那一块的话，偏移量不是 256 的整数倍时
              * 块与块之间会裂开、拖影（这就是「拖动后残留」的原因）。 */
-            this._drawOffsetTile(n, ctx, dx, dy);
+            this._drawOffsetTile(n, ctx, dx, dy, rx, ry);
           } else {
             const t = n.canvas.tiles.get(this._key);
             if (!t) continue;
@@ -414,16 +426,16 @@ export class Doc {
         sc.globalCompositeOperation = 'source-over';
         sc.clearRect(0, 0, s.width, s.height);
 
-        if (off && (dx || dy)) this._drawOffsetTile(n, sc, dx, dy);
+        if (off && (dx || dy)) this._drawOffsetTile(n, sc, dx, dy, bx, by);
         else {
           const t = n.canvas.tiles.get(this._key);
-          if (t) sc.drawImage(t.canvas, t.col * TILE - rx + dx, t.row * TILE - ry + dy);
+          if (t) sc.drawImage(t.canvas, t.col * TILE - bx + dx, t.row * TILE - by + dy);
         }
 
         const mt = n.mask.tiles.get(this._key);
         if (mt) {
           sc.globalCompositeOperation = 'destination-in';
-          sc.drawImage(mt.canvas, mt.col * TILE - rx, mt.row * TILE - ry);
+          sc.drawImage(mt.canvas, mt.col * TILE - bx, mt.row * TILE - by);
           sc.globalCompositeOperation = 'source-over';
         } else {
           sc.clearRect(0, 0, s.width, s.height);   // 蒙版这块是空的 = 整块看不见
@@ -431,7 +443,7 @@ export class Doc {
 
         ctx.globalAlpha = n.opacity;
         ctx.globalCompositeOperation = n.mode;
-        ctx.drawImage(s, rx, ry);
+        ctx.drawImage(s, bx, by);
         continue;
       }
 
@@ -446,10 +458,12 @@ export class Doc {
       sc.globalAlpha = 1;
       sc.globalCompositeOperation = 'source-over';
       sc.clearRect(0, 0, s.width, s.height);
-      this._drawStack(n.children, sc, rx, ry, depth + 1, scratchFor);
+      /* 递归进 scratch 时把原点挪到当前块：scratch 是 256×256，
+       * 继续传 rx/ry(=0) 的话子层内容会画到世界坐标的位置，跑出画布。 */
+      this._drawStack(n.children, sc, bx, by, depth + 1, scratchFor);
       ctx.globalAlpha = n.opacity;
       ctx.globalCompositeOperation = n.mode;
-      ctx.drawImage(s, rx, ry);
+      ctx.drawImage(s, bx, by);
     }
   }
 

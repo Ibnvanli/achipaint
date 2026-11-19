@@ -294,8 +294,11 @@ export async function parse(buffer) {
 
   const docW = Math.round(header.doc.w);
   const docH = Math.round(header.doc.h);
-  if (docW < 1 || docH < 1 || docW > 20000 || docH > 20000) {
-    throw new AchiFileError(`画布尺寸不合理：${docW}×${docH}`, 'BAD_HEADER');
+  /* 上限要和新建对话框一致（12000）。
+   * 20 万像素见方会先分配 1.6GB 的离屏画布，坏文件能把内存吃光。 */
+  const MAX_SIDE = 12000;
+  if (docW < 1 || docH < 1 || docW > MAX_SIDE || docH > MAX_SIDE) {
+    throw new AchiFileError(`画布尺寸不合理：${docW}×${docH}（上限 ${MAX_SIDE}）`, 'BAD_HEADER');
   }
 
   // ---- 4. 数据块 ----

@@ -252,6 +252,8 @@ function toDoc(e) {
 
 
 view.addEventListener('pointerdown', e => {
+  // 只认左键（笔尖也是 0）。右键/中键不该落笔
+  if (e.button !== undefined && e.button !== 0) return;
   lastPointerAt = performance.now();
   // 脚本合成的 PointerEvent 没有真实 pointer 可捕获，会抛 NotFoundError。
   // 真机上捕获失败也不该让整个落笔流程断掉。
@@ -1534,6 +1536,12 @@ $('btn-add-group').onclick = () => { doc.addGroup(); renderLayers(); redraw(); }
 /* 撤销/重做的按钮绑定统一放在下面的命令分发处，别在这里再绑一次 */
 
 window.addEventListener('keydown', e => {
+  // 在输入框里打字时，b/e/v/m 这些不该被当成工具切换
+  const el = e.target;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) {
+    // 只放行 Esc（取消）和 Enter（已经各自处理）
+    if (e.key !== 'Escape') return;
+  }
   const meta = e.metaKey || e.ctrlKey;
   if (meta && e.key.toLowerCase() === 'z') {
     e.preventDefault();

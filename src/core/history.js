@@ -87,7 +87,10 @@ export class History {
     const bytes = before.data.length + after.data.length;
 
     this.stack = this.stack.slice(0, this.index + 1);
-    this.stack.push({ rect, before, after, bytes });
+    /* 必须记下这块快照属于哪个画布。
+     * 以前只存 rect，撤销时贴给「当前活动图层」——跨图层撤销就会把 A 层的像素
+     * 写进 B 层，同时该撤的没撤。 */
+    this.stack.push({ rect, before, after, bytes, target: t });
     this.index = this.stack.length - 1;
     this.bytes += bytes;
     this.trim();
@@ -111,7 +114,8 @@ export class History {
   undo(tileCanvas) {
     if (this.index < 0 || this.index >= this.stack.length) return false;
     const rec = this.stack[this.index];
-    writeRect(tileCanvas, rec.rect, rec.before);
+    // 用记录自己的目标画布；参数只作为老记录（没有 target 的）的兜底
+    writeRect(rec.target || tileCanvas, rec.rect, rec.before);
     this.index--;
     return true;
   }
@@ -120,7 +124,7 @@ export class History {
     if (this.index >= this.stack.length - 1) return false;
     this.index++;
     const rec = this.stack[this.index];
-    writeRect(tileCanvas, rec.rect, rec.after);
+    writeRect(rec.target || tileCanvas, rec.rect, rec.after);
     return true;
   }
 
