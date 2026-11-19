@@ -141,7 +141,17 @@
   max-height: 100%;
   overflow-y: auto;
   margin-bottom: var(--s-2);
+  /* 系统滚动条在深色面板上是一条亮白，太扎眼 */
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
 }
+.splash-recent::-webkit-scrollbar { width: 6px; }
+.splash-recent::-webkit-scrollbar-track { background: transparent; }
+.splash-recent::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 3px;
+}
+.splash-recent::-webkit-scrollbar-thumb:hover { background: var(--fg-2); }
 
 .splash-empty {
   margin: 0;
@@ -379,16 +389,27 @@ html.electron .splash-panel { -webkit-app-region: no-drag; }
 
 .ri-confirm {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 4px;
   width: 100%;
-  padding: 4px var(--s-2);
+  min-width: 0;
+  padding: 5px var(--s-2);
   font-size: var(--t-s);
   color: var(--fg-2);
 }
-.ri-confirm > span { flex: 1; white-space: nowrap; }
+.ri-confirm > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.ri-actions {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
 .ri-confirm button {
-  padding: 2px 7px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 2px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   background: var(--bg-3);
   border: 1px solid var(--line-1);
   border-radius: var(--r-s);

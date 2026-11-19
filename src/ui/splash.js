@@ -289,27 +289,36 @@ export class Splash {
 
     const bar = document.createElement('div');
     bar.className = 'ri-confirm';
-    bar.innerHTML = `<span>移除这条记录？</span>`;
+
+    const label = document.createElement('span');
+    label.textContent = hasFile ? '移除这条记录？文件呢' : '移除这条记录？';
+    bar.appendChild(label);
+
+    // 按钮单独一行：右栏只有 280px 上下，三个按钮和文字挤一行必然溢出
+    const actions = document.createElement('div');
+    actions.className = 'ri-actions';
 
     const keep = document.createElement('button');
-    keep.textContent = '仅移除记录';
+    keep.textContent = '仅移除';
+    keep.title = '只从最近列表去掉，文件不动';
     keep.onclick = ev => { ev.stopPropagation(); this.onRemoveRecent(item, false); };
-
-    bar.appendChild(keep);
+    actions.appendChild(keep);
 
     if (hasFile) {
       const wipe = document.createElement('button');
       wipe.className = 'danger';
-      wipe.textContent = '连文件一起删';
+      wipe.textContent = '连文件删';
+      wipe.title = '同时删除磁盘上的 .achi 文件';
       wipe.onclick = ev => { ev.stopPropagation(); this.onRemoveRecent(item, true); };
-      bar.appendChild(wipe);
+      actions.appendChild(wipe);
     }
 
     const cancel = document.createElement('button');
     cancel.textContent = '取消';
     cancel.onclick = ev => { ev.stopPropagation(); this.refreshRecent(); };
-    bar.appendChild(cancel);
+    actions.appendChild(cancel);
 
+    bar.appendChild(actions);
     row.appendChild(bar);
   }
 
