@@ -1,7 +1,7 @@
 {
   "name": "achipaint",
   "productName": "AchiPaint",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
   "description": "轻核心、边缘插件的绘画工具",
   "license": "MIT",
   "private": true,

@@ -11,6 +11,7 @@ import { Slider } from './ui/widgets.js';
 import { ColorPicker } from './ui/colorpicker.js';
 import { Splash, pushRecent, removeRecent } from './ui/splash.js';
 import { MenuBar } from './ui/menubar.js';
+import { VERSION } from './version.js';
 import { serialize, parse, AchiFileError } from './core/format.js';
 import { saveFile, openFile, openByPath, canOpenByPath, deleteFile } from './platform/fileio.js';
 import pngExporter from './plugins/export-png.js';
@@ -1583,7 +1584,7 @@ window.__achi = {
   },
 
   async selfTestRoundtrip() {
-    const blob = await serialize(doc, { app: '0.1.0' });
+    const blob = await serialize(doc, { app: VERSION });
     const before = [doc.w, doc.h];
     const { doc: back } = await parse(await blob.arrayBuffer());
     const ok = back.w === before[0] && back.h === before[1];
@@ -1752,7 +1753,7 @@ async function doSave(forceDialog = false) {
   setBusy(btn, true);
   try {
     const blob = await serialize(doc, {
-      app: '0.1.0',
+      app: VERSION,
       brush: {
         size: brush.size, opacity: brush.opacity, flow: brush.flow,
         hardness: brush.hardness, spacing: brush.spacing, stabilize: brush.stabilize,

@@ -5,6 +5,8 @@
  * 所以那边点进去只会提示用「打开文件」。
  */
 
+import { VERSION_LABEL } from '../version.js';
+
 const RECENT_KEY = 'achi.recent';
 const RECENT_MAX = 20;
 
@@ -80,6 +82,9 @@ export class Splash {
     this.onRemoveRecent = opts.onRemoveRecent || (() => {});
     this.defaultSize = opts.defaultSize;
     this.canOpenRecent = !!opts.canOpenRecent;
+
+    const ver = document.getElementById('splash-ver');
+    if (ver) ver.textContent = VERSION_LABEL;
 
     this.buildPresets();
     this.bindList();

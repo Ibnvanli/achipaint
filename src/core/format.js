@@ -123,7 +123,7 @@ export async function serialize(doc, extra = {}) {
   const header = {
     format: 'achipaint',
     version: FORMAT_VERSION,
-    app: extra.app || '0.1.0',
+    app: extra.app || '0.1.0',   // 兜底，实际由调用方传
     created: new Date().toISOString(),
     doc: { w: doc.w, h: doc.h, background: doc.background || 'white' },
     view: { x: doc.view.x, y: doc.view.y, zoom: doc.view.zoom },
