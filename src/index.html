@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AchiPaint</title>
-<link rel="stylesheet" href="./ui/theme.css?v=1795047000">
+<link rel="stylesheet" href="./ui/theme.css?v=1795052000">
+<link rel="stylesheet" href="./ui/splash.css?v=1795052000">
 </head>
 <body>
 <div class="app">
@@ -105,6 +106,39 @@
   </div>
 </div>
 
-<script type="module" src="./main.js?v=1795047000"></script>
+<!-- 启动浮层：浮在主界面上，选完尺寸就收起 -->
+<div class="splash" id="splash" hidden>
+  <div class="splash-panel" role="dialog" aria-label="新建画布">
+    <header class="splash-head">
+      <svg class="splash-mark" viewBox="0 0 64 64" aria-hidden="true">
+        <path d="M14 50 C22 34, 30 44, 38 28 S52 16, 52 16" fill="none"
+              stroke="#dfa03c" stroke-width="7" stroke-linecap="round"/>
+      </svg>
+      <div class="splash-id">
+        <b>AchiPaint</b>
+        <span>新建画布</span>
+      </div>
+      <span class="splash-ver">v0.1.0</span>
+    </header>
+
+    <div class="splash-grid" id="splash-presets"></div>
+
+    <div class="splash-custom">
+      <span>自定义</span>
+      <input id="splash-w" type="number" min="64" max="12000" step="1" value="2480">
+      <span class="splash-x">×</span>
+      <input id="splash-h" type="number" min="64" max="12000" step="1" value="3508">
+      <button class="btn primary" id="splash-create">创建</button>
+    </div>
+    <p class="splash-hint" id="splash-hint"></p>
+
+    <footer class="splash-foot">
+      <span class="splash-dim">还没有文件 —— 保存功能还没做</span>
+      <span class="splash-dim">Esc 用默认尺寸</span>
+    </footer>
+  </div>
+</div>
+
+<script type="module" src="./main.js?v=1795053000"></script>
 </body>
 </html>

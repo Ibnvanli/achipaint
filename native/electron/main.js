@@ -12,7 +12,7 @@ function createWindow() {
     titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 13 },
     webPreferences: { nodeIntegration: false, contextIsolation: true, backgroundThrottling: false },
   });
-  win.loadURL(`${SCHEME}://local/src/welcome.html`);
+  win.loadURL(`${SCHEME}://local/src/index.html`);
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   return win;
 }

@@ -9,6 +9,7 @@ import { Bus, PluginHost } from './core/bus.js';
 import { DEFAULT_SWATCHES } from './core/color.js';
 import { Slider } from './ui/widgets.js';
 import { ColorPicker } from './ui/colorpicker.js';
+import { Splash } from './ui/splash.js';
 import pngExporter from './plugins/export-png.js';
 
 const $ = id => document.getElementById(id);
@@ -23,9 +24,11 @@ if (/\.Electron/i.test(navigator.userAgent) || navigator.userAgent.includes('Ele
 /* 尺寸从启动页带过来：index.html?w=2480&h=3508。
  * 没带参数就退回 A4@300dpi，保证直接打开 index.html 也能用。 */
 const qs = new URLSearchParams(location.search);
+/* 链接里带了尺寸就直接进画布（启动页会跳过），否则先弹启动浮层 */
+const HAS_SIZE = qs.has('w') && qs.has('h');
 const DW = Math.max(64, Math.min(12000, parseInt(qs.get('w'), 10) || 2480));
 const DH = Math.max(64, Math.min(12000, parseInt(qs.get('h'), 10) || 3508));
-const doc = new Doc(DW, DH);
+let doc = new Doc(DW, DH);
 const brush = new Brush();
 const history = new History();
 const bus = new Bus();
@@ -967,7 +970,13 @@ $('btn-export').onclick = async () => {
 };
 
 /* ---------- 调试钩子（开发期用，方便在控制台查状态） ---------- */
-window.__achi = { doc, brush, history, host, bus, redraw, requestPaint, hk };
+/* doc 是可重建的（启动浮层选尺寸会换掉它），所以这里必须用 getter，
+ * 否则调试钩子永远指着第一张画布。 */
+window.__achi = {
+  get doc() { return doc; },
+  brush, history, host, bus, redraw, requestPaint, hk,
+  newDocument,
+};
 
 /* ---------- hokusai 载入 ---------- */
 /* 撤销的钩子：overlay 一变就扩拍，压图层之前那些像素已经存好了 */
@@ -1081,6 +1090,32 @@ picker.resize(wheelSizeFor(sidebarW));   // 存过宽度的话，色轮一开始
   });
 })();
 
+/* ---------- 新建文档 ----------
+ * 直接把 doc 换成新的，然后把唯一一个外部引用（hk.doc）接上。
+ * hk 的 surface 尺寸变了会在 ensureSurface 里自己重建；同尺寸时要手动丢弃，
+ * 否则上一张画的内容还留在里面。
+ */
+function newDocument(w, h) {
+  doc = new Doc(w, h);
+
+  hk.doc = doc;
+  hk.canvas = null;
+  hk.current = null;
+
+  history.stack = [];
+  history.index = -1;
+  history.bytes = 0;
+
+  stroke = null;
+  pending = null;
+  gesture = null;
+
+  $('st-size').textContent = doc.w + ' × ' + doc.h;
+  fit();
+  renderLayers();
+  redraw();
+}
+
 /* ---------- 启动 ---------- */
 window.addEventListener('resize', resize);
 resize();
@@ -1089,3 +1124,12 @@ renderLayers();
 document.querySelector('[data-tool="brush"]').style.borderColor = 'var(--accent)';
 $('st-size').textContent = doc.w + ' × ' + doc.h;
 initHokusai();
+
+/* 没在链接里指定尺寸 → 先弹启动浮层 */
+if (!HAS_SIZE) {
+  const splash = new Splash({
+    defaultSize: { w: DW, h: DH },
+    onPick: (w, h) => newDocument(w, h),
+  });
+  splash.show();
+}
