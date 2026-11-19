@@ -1121,7 +1121,9 @@ window.addEventListener('resize', resize);
 resize();
 fit();
 renderLayers();
-document.querySelector('[data-tool="brush"]').style.borderColor = 'var(--accent)';
+/* 初始工具也用 setTool 走一遍：以前这里是直接写 style.borderColor，
+ * 内联样式压过 .on 类，导致切走之后画笔按钮还亮着，变成两个同时高亮。 */
+setTool('brush');
 $('st-size').textContent = doc.w + ' × ' + doc.h;
 initHokusai();
 
