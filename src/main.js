@@ -1186,7 +1186,10 @@ async function doOpen() {
     setDocName(picked.name.replace(/\.achi$/i, ''));
     $('st-size').textContent = doc.w + ' × ' + doc.h;
     renderLayers();
-    requestPaint();
+    /* 必须 redraw() 而不是 requestPaint()：新文档的 dirtyTiles 是空的，
+     * flushDirty 什么都不做，doc.off 里还留着上一张画的画面 ——
+     * 表现就是「打开之后一片空白，动一下才出来」。 */
+    redraw();
 
     if (warnings && warnings.length) console.warn('[打开] 有告警：', warnings);
     return true;
