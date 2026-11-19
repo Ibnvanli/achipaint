@@ -685,3 +685,23 @@ canvas { display: block; position: absolute; inset: 0; }
   text-align: center;
   line-height: 1.7;
 }
+
+/* 旋转角度提示 */
+.rotate-hint {
+  position: fixed;
+  left: 50%;
+  bottom: 96px;
+  transform: translateX(-50%) translateY(6px);
+  padding: 6px 14px;
+  background: rgba(20, 20, 19, .92);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-s);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 15px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .1s, transform .1s;
+  z-index: 180;
+}
+.rotate-hint.on { opacity: 1; transform: translateX(-50%); }

@@ -265,7 +265,22 @@ view.addEventListener('pointerdown', e => {
   }
   if (tool === 'move') {
     const node = doc.layer;
-    gesture = { kind: 'move', node, x0: p.x, y0: p.y, bounds: node ? boundsOf(node.canvas) : null };
+    const bounds = node ? boundsOf(node.canvas) : null;
+
+    /* 按住 ⌥ 拖动 = 绕内容中心旋转。
+     * 用包围盒中心而不是画布中心 —— 内容偏在一角时，绕画布中心转会甩出去。 */
+    if (e.altKey && bounds) {
+      const cx = (bounds.x0 + bounds.x1) / 2;
+      const cy = (bounds.y0 + bounds.y1) / 2;
+      gesture = {
+        kind: 'rotate', node, bounds, cx, cy,
+        a0: Math.atan2(p.y - cy, p.x - cx),
+        angle: 0,
+      };
+      return;
+    }
+
+    gesture = { kind: 'move', node, x0: p.x, y0: p.y, bounds };
     return;
   }
 
@@ -666,6 +681,86 @@ window.addEventListener('drop', async e => {
   }
 });
 
+/* ---------- 旋转 ----------
+ * 拖动时不重采样（8.7M 像素每帧都做会卡死），只显示角度；
+ * 松手才真正转一次。
+ */
+let rotateHintEl = null;
+
+function showRotateHint(deg) {
+  if (!rotateHintEl) {
+    rotateHintEl = document.createElement('div');
+    rotateHintEl.className = 'rotate-hint';
+    document.body.appendChild(rotateHintEl);
+  }
+  rotateHintEl.textContent = (deg >= 0 ? '+' : '') + Math.round(deg) + '°';
+  rotateHintEl.classList.add('on');
+}
+
+function hideRotateHint() {
+  if (rotateHintEl) rotateHintEl.classList.remove('on');
+}
+
+/**
+ * 把整层绕内容中心旋转 deg 度，重采样后写回瓦片。
+ * 注意不是块级旋转 —— 旋转后每块的内容来自任意方向，只能整层重采样。
+ */
+function rotateLayer(node, deg) {
+  const tc = node.canvas;
+  const b = boundsOf(tc);
+  if (!b) return;
+
+  const pending = history.beginStroke(tc);
+  history.grabRegion(pending, 0, 0, doc.w, doc.h);
+
+  const cx = (b.x0 + b.x1) / 2;
+  const cy = (b.y0 + b.y1) / 2;
+
+  /* 两步：先无变换地把整层无缝合并，再一次性旋转。
+   * 直接对每块做旋转 drawImage 的话，每块边缘都落在非整数位置，
+   * 相邻块插值不一致 → 一条条浅色缝。 */
+  const flat = document.createElement('canvas');
+  flat.width = doc.w;
+  flat.height = doc.h;
+  const fctx = flat.getContext('2d');
+  for (const t of tc.tiles.values()) {
+    fctx.drawImage(t.canvas, t.col * TILE, t.row * TILE);
+  }
+
+  const tmp = document.createElement('canvas');
+  tmp.width = doc.w;
+  tmp.height = doc.h;
+  const tctx = tmp.getContext('2d');
+  tctx.translate(cx, cy);
+  tctx.rotate(deg * Math.PI / 180);
+  tctx.translate(-cx, -cy);
+  tctx.drawImage(flat, 0, 0);
+
+  // 写回瓦片
+  const old = [...tc.tiles.values()].map(t => ({ col: t.col, row: t.row, canvas: t.canvas }));
+  tc.tiles.clear();
+  for (let r = 0; r < tc.rows; r++) {
+    for (let c = 0; c < tc.cols; c++) {
+      const tw = Math.min(TILE, doc.w - c * TILE);
+      const th = Math.min(TILE, doc.h - r * TILE);
+      if (tw <= 0 || th <= 0) continue;
+      /* 每块向外多取 1px 重叠。
+       * 精确取 tw×th 时相邻块之间会留一条亚像素缝（旋转后特别明显）。 */
+      const ox0 = c * TILE, oy0 = r * TILE;
+      const sx = Math.max(0, ox0 - 1), sy = Math.max(0, oy0 - 1);
+      const sw = Math.min(tmp.width - sx, tw + 2), sh = Math.min(tmp.height - sy, th + 2);
+      const t = tc.tile(c, r);
+      t.ctx.drawImage(tmp, sx, sy, sw, sh, sx - ox0, sy - oy0, sw, sh);
+    }
+  }
+  if (node.mask) { /* 蒙版跟着转会更复杂，先不动，留给自由变换统一做 */ }
+
+  tc.markDirty(0, 0, doc.w, doc.h);
+  if (pending) history.commit(pending);
+  redraw();
+  toast(`已旋转 ${deg >= 0 ? '+' : ''}${Math.round(deg)}°`);
+}
+
 /* ---------- 平移缩放 ---------- */
 view.addEventListener('wheel', e => {
   e.preventDefault();
@@ -794,6 +889,16 @@ function gestureMove(e) {
     return;
   }
 
+  if (g.kind === 'rotate') {
+    const a = Math.atan2(p.y - g.cy, p.x - g.cx);
+    let deg = (a - g.a0) * 180 / Math.PI;
+    // 按住 ⇧ 吸附到 15°
+    if (e.shiftKey) deg = Math.round(deg / 15) * 15;
+    g.angle = deg;
+    showRotateHint(deg);
+    return;
+  }
+
   if (g.kind === 'move') {
     const dx = Math.round(p.x - g.x0);
     const dy = Math.round(p.y - g.y0);
@@ -817,6 +922,15 @@ function gestureEnd() {
     const r = g.rect;
     doc.selection = (r && (r.x1 - r.x0) > 1 && (r.y1 - r.y0) > 1) ? r : null;
     requestPaint();
+    return;
+  }
+
+  if (g.kind === 'rotate') {
+    hideRotateHint();
+    const deg = g.angle || 0;
+    gesture = null;
+    if (Math.abs(deg) >= 0.5) rotateLayer(g.node, deg);
+    else requestPaint();
     return;
   }
 
@@ -1287,6 +1401,7 @@ window.__achi = {
   get doc() { return doc; },
   brush, history, host, bus, redraw, requestPaint, hk,
   newDocument, doOpen, doSave, doExport, runCommand,
+  get rotateLayer() { return rotateLayer; },
   get devconsole() { return mainConsole; },
   isAchiFile, openImageAsDocument,
 
