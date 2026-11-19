@@ -20,6 +20,7 @@ export const COMMANDS = [
   { id: 'edit:clearSel', group: 'edit', label: '取消选区', key: 'Esc' },
 
   { group: 'view', label: '视图' },
+  { id: 'view:reference', group: 'view', label: '参考图窗', key: '⇧⌘O' },
   { id: 'view:fit', group: 'view', label: '适应窗口', key: '⌘0' },
   { id: 'view:100', group: 'view', label: '实际大小', key: '⌘1' },
   { id: 'view:in', group: 'view', label: '放大', key: '⌘+' },

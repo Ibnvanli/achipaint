@@ -198,6 +198,7 @@ function paint() {
 
   $('st-zoom').textContent = Math.round(zoom * 100) + '%';
   $('st-mem').textContent = '撤销 ' + (history.bytes / 1048576).toFixed(1) + ' MB';
+  updateNavigator();
   perfMark();
 }
 
@@ -391,6 +392,253 @@ function endStroke() {
 
 view.addEventListener('pointerup', endStroke);
 view.addEventListener('pointercancel', endStroke);
+
+/* ---------- 参考图窗 ----------
+ * 钉一张图在旁边对着画。可拖、可缩放、可换图。
+ * 它和画布上的文档互不相干 —— 只是「看得见」，不进任何图层。
+ */
+const refWin = $('reference');
+const refImg = $('ref-img');
+const refEmpty = $('ref-empty');
+const refBody = $('ref-body');
+const refZoom = $('ref-zoom');
+let refScale = 1;
+let refUrl = null;
+
+function refShow(on) {
+  refWin.toggleAttribute('hidden', !on);
+  if (on && !refImg.src) refEmpty.hidden = false;
+}
+$('ref-close').onclick = () => refShow(false);
+
+function refSetImage(file) {
+  if (refUrl) URL.revokeObjectURL(refUrl);
+  refUrl = URL.createObjectURL(file);
+  refImg.src = refUrl;
+  refImg.hidden = false;
+  refEmpty.hidden = true;
+  refScale = 1;
+  refApplyScale();
+  // 按图片原始宽度定窗宽，但不超过屏的 40%
+  const probe = new Image();
+  probe.onload = () => {
+    const maxW = Math.min(420, window.innerWidth * 0.4);
+    const w = Math.max(200, Math.min(maxW, probe.naturalWidth));
+    refWin.style.width = w + 'px';
+  };
+  probe.src = refUrl;
+}
+
+function refApplyScale() {
+  refImg.style.transform = `scale(${refScale})`;
+  refZoom.textContent = Math.round(refScale * 100) + '%';
+}
+
+$('ref-load').onclick = () => {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.onchange = () => {
+    const f = input.files && input.files[0];
+    if (f) refSetImage(f);
+  };
+  input.click();
+};
+
+/* 拖进这个面板就是换参考图；拖到画布上仍然走「打开文档」 */
+refBody.addEventListener('dragover', e => {
+  if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+  e.preventDefault();
+  e.stopPropagation();
+  refBody.classList.add('dragover');
+});
+refBody.addEventListener('dragleave', () => refBody.classList.remove('dragover'));
+refBody.addEventListener('drop', e => {
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (!f) return;
+  e.preventDefault();
+  e.stopPropagation();
+  refBody.classList.remove('dragover');
+  dragDepth = 0;
+  dropHint(false);
+  if (!f.type.startsWith('image/')) { toast('参考窗只接图片', 'error'); return; }
+  refSetImage(f);
+});
+
+/* 滚轮缩放 */
+refBody.addEventListener('wheel', e => {
+  if (refImg.hidden) return;
+  e.preventDefault();
+  refScale = Math.max(0.05, Math.min(8, refScale * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+  refApplyScale();
+}, { passive: false });
+
+/* 拖标题栏移动 */
+(() => {
+  const head = $('ref-head');
+  let dragging = false, ox = 0, oy = 0;
+  head.addEventListener('pointerdown', e => {
+    if (e.target.closest('button')) return;
+    dragging = true;
+    head.setPointerCapture(e.pointerId);
+    const r = refWin.getBoundingClientRect();
+    ox = e.clientX - r.left;
+    oy = e.clientY - r.top;
+    refWin.style.right = 'auto';
+    refWin.style.left = r.left + 'px';
+    refWin.style.top = r.top + 'px';
+  });
+  head.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    refWin.style.left = Math.max(0, Math.min(window.innerWidth - 80, e.clientX - ox)) + 'px';
+    refWin.style.top = Math.max(0, Math.min(window.innerHeight - 60, e.clientY - oy)) + 'px';
+  });
+  head.addEventListener('pointerup', e => {
+    dragging = false;
+    try { head.releasePointerCapture(e.pointerId); } catch {}
+  });
+})();
+
+/* 菜单/命令里切换 */
+function toggleReference() {
+  if (refWin.hasAttribute('hidden')) refShow(true);
+  else refShow(false);
+}
+
+/* ---------- 导航器 ----------
+ * 整张画的缩略图 + 当前视口框。点哪跳哪。
+ * 缩略图要重画整个 doc.off，所以节流到 8fps —— 再快纯属浪费。
+ */
+const navCanvas = $('nav-canvas');
+const navFrame = $('nav-frame');
+let navAt = 0;
+
+function navMetrics() {
+  const maxW = 148, maxH = 108;
+  const s = Math.min(maxW / doc.w, maxH / doc.h, 1);
+  return { s, cw: Math.max(8, Math.round(doc.w * s)), ch: Math.max(8, Math.round(doc.h * s)) };
+}
+
+function updateNavigator(force) {
+  if (!navCanvas) return;
+  const now = performance.now();
+  if (!force && now - navAt < 120) return;
+  navAt = now;
+
+  const { s, cw, ch } = navMetrics();
+  if (navCanvas.width !== cw || navCanvas.height !== ch) {
+    navCanvas.width = cw;
+    navCanvas.height = ch;
+    navCanvas.style.width = cw + 'px';
+    navCanvas.style.height = ch + 'px';
+  }
+
+  const nctx = navCanvas.getContext('2d');
+  nctx.clearRect(0, 0, cw, ch);
+  nctx.fillStyle = '#ffffff';
+  nctx.fillRect(0, 0, cw, ch);
+  // 缩略图不需要平滑，省点
+  nctx.imageSmoothingEnabled = false;
+  nctx.drawImage(doc.off, 0, 0, doc.w, doc.h, 0, 0, cw, ch);
+
+  const st = $('stage').getBoundingClientRect();
+  const vx = -doc.view.x / doc.view.zoom;
+  const vy = -doc.view.y / doc.view.zoom;
+  const vw = st.width / doc.view.zoom;
+  const vh = st.height / doc.view.zoom;
+
+  const fx = Math.max(0, vx * s);
+  const fy = Math.max(0, vy * s);
+  const fw = Math.min(cw - fx, vw * s);
+  const fh = Math.min(ch - fy, vh * s);
+
+  navFrame.style.left = fx + 'px';
+  navFrame.style.top = fy + 'px';
+  navFrame.style.width = Math.max(3, fw) + 'px';
+  navFrame.style.height = Math.max(3, fh) + 'px';
+  // 视口比整张画还大时不画框（全看清了，框没意义）
+  navFrame.style.opacity = (fw >= cw - 1 && fh >= ch - 1) ? '0' : '1';
+}
+
+/* 点/拖导航器 → 把那里挪到视口中心 */
+function navJump(clientX, clientY) {
+  const r = navCanvas.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  const s = doc.w / r.width;
+  const dx = (clientX - r.left) * s;
+  const dy = (clientY - r.top) * s;
+  const st = $('stage').getBoundingClientRect();
+  doc.view.x = st.width / 2 - dx * doc.view.zoom;
+  doc.view.y = st.height / 2 - dy * doc.view.zoom;
+  redraw();
+}
+
+if (navCanvas) {
+  let navDrag = false;
+  navCanvas.addEventListener('pointerdown', e => {
+    navDrag = true;
+    navCanvas.setPointerCapture(e.pointerId);
+    navJump(e.clientX, e.clientY);
+  });
+  navCanvas.addEventListener('pointermove', e => {
+    if (navDrag) navJump(e.clientX, e.clientY);
+  });
+  navCanvas.addEventListener('pointerup', e => {
+    navDrag = false;
+    try { navCanvas.releasePointerCapture(e.pointerId); } catch {}
+  });
+}
+
+/* ---------- 拖拽打开 ----------
+ * 拖 .achi 就是打开，拖图片就是新建同尺寸文档 —— 和文件对话框同一套入口。
+ */
+let dragDepth = 0;
+
+function dropHint(on) {
+  let el = document.getElementById('drop-hint');
+  if (!el) {
+    if (!on) return;
+    el = document.createElement('div');
+    el.id = 'drop-hint';
+    el.className = 'drop-hint';
+    el.innerHTML = '<div class="drop-inner"><b>松手打开</b><span>.achi 或图片</span></div>';
+    document.body.appendChild(el);
+  }
+  el.classList.toggle('on', on);
+}
+
+window.addEventListener('dragenter', e => {
+  if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+  e.preventDefault();
+  dragDepth++;
+  dropHint(true);
+});
+
+window.addEventListener('dragover', e => {
+  if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+});
+
+window.addEventListener('dragleave', e => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dropHint(false);
+});
+
+window.addEventListener('drop', async e => {
+  if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+  e.preventDefault();
+  dragDepth = 0;
+  dropHint(false);
+
+  const f = e.dataTransfer.files[0];
+  try {
+    const buffer = await f.arrayBuffer();
+    await openFromBuffer(buffer, f.name, f.path || null);
+  } catch (err) {
+    showFileError('拖入失败', err);
+  }
+});
 
 /* ---------- 平移缩放 ---------- */
 view.addEventListener('wheel', e => {
@@ -984,6 +1232,7 @@ window.addEventListener('keydown', e => {
   if (meta && k === 'o') { e.preventDefault(); doOpen(); return; }
   if (meta && e.shiftKey && k === 'd') { e.preventDefault(); openDevConsole(); return; }
   if (meta && e.shiftKey && k === 'r') { e.preventDefault(); location.reload(); return; }
+  if (meta && e.shiftKey && k === 'o') { e.preventDefault(); toggleReference(); return; }
   if (!meta && TOOL_KEYS[k]) { setTool(TOOL_KEYS[k]); }
   if (!meta && k === 'x') { swapColors(); }
   if (e.key === 'Escape') {
@@ -1287,6 +1536,24 @@ function installDocument(loaded, name, path) {
   redraw();
 }
 
+/* 统一的「从字节打开」：文件对话框、最近列表、拖拽，全走这一条。
+ * 返回 true 表示真的换了文档。 */
+async function openFromBuffer(buffer, name, path) {
+  const bytes = new Uint8Array(buffer);
+
+  // 图片走另一条路：新建一个同尺寸文档，图铺在底层
+  if (bytes.length < 4 || !isAchiFile(bytes)) {
+    await openImageAsDocument(bytes, name);
+    return true;
+  }
+
+  const { doc: loaded, warnings } = await parse(buffer);
+  installDocument(loaded, name, path);
+  toast(`已打开：${name}`);
+  if (warnings && warnings.length) console.warn('[打开] 有告警：', warnings);
+  return true;
+}
+
 async function doOpen(fromPath) {
   const btn = $('btn-open');
   setBusy(btn, true);
@@ -1295,20 +1562,7 @@ async function doOpen(fromPath) {
       ? await openByPath(fromPath)
       : await openFile();
     if (!picked) return false;
-
-    const bytes = new Uint8Array(picked.buffer);
-
-    // 图片走另一条路：新建一个同尺寸文档，图铺在底层
-    if (bytes.length < 4 || !isAchiFile(bytes)) {
-      await openImageAsDocument(bytes, picked.name);
-      return true;
-    }
-
-    const { doc: loaded, warnings } = await parse(picked.buffer);
-    installDocument(loaded, picked.name, picked.path);
-    toast(`已打开：${picked.name}`);
-    if (warnings && warnings.length) console.warn('[打开] 有告警：', warnings);
-    return true;
+    return await openFromBuffer(picked.buffer, picked.name, picked.path);
   } catch (e) {
     showFileError('打开失败', e);
     return false;
@@ -1349,6 +1603,7 @@ function runCommand(id) {
     case 'view:in':      setZoom(doc.view.zoom * 1.25); return;
     case 'view:out':     setZoom(doc.view.zoom / 1.25); return;
     case 'view:console': openDevConsole(); return;
+    case 'view:reference': toggleReference(); return;
     case 'debug:reload': location.reload(); return;
     case 'debug:markAll':
       doc.markAllDirty(); redraw(); toast('已强制全量重绘'); return;

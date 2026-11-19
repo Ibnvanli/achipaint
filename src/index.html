@@ -83,6 +83,14 @@
   <!-- 中：画布 -->
   <div class="stage" id="stage">
     <canvas id="view"></canvas>
+
+    <!-- 导航器：整张画的缩略图 + 当前视口框 -->
+    <div class="navigator" id="navigator" title="点击或拖动跳转">
+      <div class="nav-inner">
+        <canvas id="nav-canvas"></canvas>
+        <div class="nav-frame" id="nav-frame"></div>
+      </div>
+    </div>
   </div>
 
   <!-- 右：属性 -->
@@ -128,6 +136,21 @@
     <span id="st-size">2480 × 3508</span>
     <span style="flex:1"></span>
     <span id="st-mem">撤销 0 MB</span>
+  </div>
+</div>
+
+<!-- 参考图窗：浮动，可拖可缩放 -->
+<div class="reference" id="reference" hidden>
+  <header class="ref-head" id="ref-head">
+    <span>参考图</span>
+    <span class="ref-zoom" id="ref-zoom"></span>
+    <span class="ref-spacer"></span>
+    <button class="ref-btn" id="ref-load" title="换一张">载入</button>
+    <button class="ref-btn" id="ref-close" title="关闭">×</button>
+  </header>
+  <div class="ref-body" id="ref-body">
+    <img id="ref-img" alt="" hidden>
+    <p class="ref-empty" id="ref-empty">把图片拖进来，或点上面的「载入」</p>
   </div>
 </div>
 

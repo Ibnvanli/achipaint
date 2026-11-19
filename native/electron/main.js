@@ -157,6 +157,8 @@ function buildMenuTemplate() {
     {
       label: '视图',
       submenu: [
+        { label: '参考图窗', accelerator: 'Shift+CmdOrCtrl+O', click: send('view:reference') },
+        { type: 'separator' },
         { label: '适应窗口', accelerator: 'CmdOrCtrl+0', click: send('view:fit') },
         { label: '实际大小', accelerator: 'CmdOrCtrl+1', click: send('view:100') },
         { type: 'separator' },
