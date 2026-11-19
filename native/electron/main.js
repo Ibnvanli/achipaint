@@ -41,6 +41,34 @@ ipcMain.handle('achi:save', async (event, bytes, suggestedName) => {
   return target;
 });
 
+/* 开发者控制台窗口。
+ * 不靠渲染进程的 window.open —— 那条路需要用户手势，
+ * 从原生菜单/IPC 触发时会被弹窗拦截器拒掉。 */
+let consoleWin = null;
+ipcMain.handle('achi:open-console', async () => {
+  if (consoleWin && !consoleWin.isDestroyed()) {
+    consoleWin.show();
+    consoleWin.focus();
+    return true;
+  }
+  consoleWin = new BrowserWindow({
+    width: 600,
+    height: 560,
+    minWidth: 420,
+    minHeight: 320,
+    title: 'AchiPaint 控制台',
+    backgroundColor: '#101010',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      backgroundThrottling: false,
+    },
+  });
+  consoleWin.loadURL(`${SCHEME}://local/src/devconsole.html`);
+  consoleWin.on('closed', () => { consoleWin = null; });
+  return true;
+});
+
 /* 按路径直读：给启动页的「最近」用 */
 ipcMain.handle('achi:read', async (event, filePath) => {
   const buf = await fs.readFile(filePath);
@@ -135,9 +163,19 @@ function buildMenuTemplate() {
         { label: '放大', accelerator: 'CmdOrCtrl+Plus', click: send('view:in') },
         { label: '缩小', accelerator: 'CmdOrCtrl+-', click: send('view:out') },
         { type: 'separator' },
-        { label: '开发者控制台', accelerator: 'Shift+CmdOrCtrl+D', click: send('view:console') },
         { type: 'separator' },
         { role: 'togglefullscreen', label: '进入全屏' },
+      ],
+    },
+    {
+      label: '调试',
+      submenu: [
+        { label: '开发者控制台', accelerator: 'Shift+CmdOrCtrl+D', click: send('view:console') },
+        { label: '重新加载界面', accelerator: 'Shift+CmdOrCtrl+R', click: send('debug:reload') },
+        { type: 'separator' },
+        { label: '强制全量重绘', click: send('debug:markAll') },
+        { label: '测试：导入一张图', click: send('debug:testImage') },
+        { label: '测试：保存解析往返', click: send('debug:testRoundtrip') },
       ],
     },
     {

@@ -9,4 +9,6 @@ contextBridge.exposeInMainWorld('achiFile', {
   remove: (filePath) => ipcRenderer.invoke('achi:delete', filePath),
   // 原生菜单点下来的命令
   onMenu: (cb) => ipcRenderer.on('achi:menu', (_e, id) => cb(id)),
+  // 控制台由主进程建窗：IPC 触发的 window.open 不算用户手势，会被弹窗拦截
+  openConsole: () => ipcRenderer.invoke('achi:open-console'),
 });

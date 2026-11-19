@@ -11,7 +11,6 @@ import { Slider } from './ui/widgets.js';
 import { ColorPicker } from './ui/colorpicker.js';
 import { Splash, pushRecent, removeRecent } from './ui/splash.js';
 import { MenuBar } from './ui/menubar.js';
-import { DevConsole } from './ui/devconsole.js';
 import { serialize, parse, AchiFileError } from './core/format.js';
 import { saveFile, openFile, openByPath, canOpenByPath, deleteFile } from './platform/fileio.js';
 import pngExporter from './plugins/export-png.js';
@@ -983,7 +982,8 @@ window.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if (meta && k === 's') { e.preventDefault(); doSave(e.shiftKey); return; }
   if (meta && k === 'o') { e.preventDefault(); doOpen(); return; }
-  if (meta && e.shiftKey && k === 'd') { e.preventDefault(); devconsole.toggle(); return; }
+  if (meta && e.shiftKey && k === 'd') { e.preventDefault(); openDevConsole(); return; }
+  if (meta && e.shiftKey && k === 'r') { e.preventDefault(); location.reload(); return; }
   if (!meta && TOOL_KEYS[k]) { setTool(TOOL_KEYS[k]); }
   if (!meta && k === 'x') { swapColors(); }
   if (e.key === 'Escape') {
@@ -1012,8 +1012,7 @@ window.__achi = {
   get doc() { return doc; },
   brush, history, host, bus, redraw, requestPaint, hk,
   newDocument, doOpen, doSave, doExport, runCommand,
-  // devconsole 在后面才创建，用 getter 避免 TDZ
-  get devconsole() { return devconsole; },
+  get devconsole() { return mainConsole; },
   isAchiFile, openImageAsDocument,
 
   /* 控制台里的自测：不经过文件对话框，直接用内存里的数据走一遍真实路径 */
@@ -1349,6 +1348,16 @@ function runCommand(id) {
     case 'view:100':     setZoom(1); return;
     case 'view:in':      setZoom(doc.view.zoom * 1.25); return;
     case 'view:out':     setZoom(doc.view.zoom / 1.25); return;
+    case 'view:console': openDevConsole(); return;
+    case 'debug:reload': location.reload(); return;
+    case 'debug:markAll':
+      doc.markAllDirty(); redraw(); toast('已强制全量重绘'); return;
+    case 'debug:testImage':
+      window.__achi.selfTestImage().then(r => toast(r)).catch(e => showFileError('导入测试失败', e));
+      return;
+    case 'debug:testRoundtrip':
+      window.__achi.selfTestRoundtrip().then(r => toast(r)).catch(e => showFileError('往返测试失败', e));
+      return;
     default: console.warn('未知命令', id);
   }
 }
@@ -1376,12 +1385,125 @@ $('btn-redo').onclick = () => runCommand('edit:redo');
 $('btn-export').onclick = () => runCommand('file:export');
 
 const menubar = new MenuBar($('tb-menus'), runCommand);
-const devconsole = new DevConsole($('devconsole'));
+
 
 /* Electron 原生菜单点下来的命令走这里 */
 if (window.achiFile && window.achiFile.onMenu) {
   window.achiFile.onMenu(id => runCommand(id));
 }
+
+/* ---------- 开发者控制台 ----------
+ * 独立窗口，不是浮层：浮层会压住画布，而且和主界面抢焦点。
+ * 子窗口通过 window.opener.__achi 读主窗口的状态（同源，直接可用）。
+ */
+let consoleWin = null;
+
+/* 日志缓冲从一开始就存在 —— 否则「打开控制台之前发生的事」一条都看不到，
+ * 而那恰恰是最需要看的（崩溃、报错通常发生在你还没打开控制台的时候）。 */
+const mainConsole = {
+  logs: [],
+  push(level, args) {
+    const text = args.map(a => {
+      if (typeof a === 'string') return a;
+      try { return JSON.stringify(a); } catch { return String(a); }
+    }).join(' ');
+    this.logs.push({ level, text, t: Date.now() });
+    if (this.logs.length > 800) this.logs.shift();
+  },
+  clear() { this.logs = []; },
+};
+
+/* 窗口之间用 BroadcastChannel 通信：
+ * Electron 里窗口由主进程建（window.open 会被弹窗拦截），拿不到 opener；
+ * 浏览器里 window.open 能用，但统一走频道比维护两条路省事。 */
+const consoleBus = (() => {
+  try { return new BroadcastChannel('achi-console'); } catch { return null; }
+})();
+
+function consoleSnapshot() {
+  const perf = window.__achiPerf || [];
+  const leaves = [];
+  const walk = ns => ns.forEach(n => n.isGroup ? walk(n.children) : leaves.push(n));
+  walk(doc.root.children);
+  return {
+    type: 'state',
+    t: Date.now(),
+    logs: mainConsole.logs.slice(-300),
+    perf: perf.slice(-300).map(p => ({ gap: p.gap, inputLag: p.inputLag, frame: p.frame })),
+    heap: performance.memory ? performance.memory.usedJSHeapSize : null,
+    canvas: (() => { const c = $('view'); return c ? [c.width, c.height] : null; })(),
+    doc: {
+      w: doc.w, h: doc.h,
+      background: doc.background,
+      zoom: doc.view.zoom,
+      viewX: doc.view.x, viewY: doc.view.y,
+      selection: doc.selection,
+      active: doc.activeLeaf ? doc.activeLeaf.name : null,
+      layers: leaves.map(l => ({
+        name: l.name, visible: l.visible !== false,
+        opacity: l.opacity, mode: l.mode, tiles: l.canvas.tiles.size,
+      })),
+    },
+    history: { steps: history.stack.length, bytes: history.bytes },
+    hkReady: !!(hk && hk.ready),
+    isElectron: !!window.achiFile,
+    recents: (() => { try { return JSON.parse(localStorage.getItem('achi.recent') || '[]'); } catch { return []; } })(),
+  };
+}
+
+if (consoleBus) {
+  consoleBus.onmessage = async ev => {
+    const msg = ev.data || {};
+    if (msg.type === 'poll') {
+      consoleBus.postMessage(consoleSnapshot());
+      return;
+    }
+    if (msg.type === 'test') {
+      try {
+        let result;
+        if (msg.id === 'image') result = await window.__achi.selfTestImage();
+        else if (msg.id === 'roundtrip') result = await window.__achi.selfTestRoundtrip();
+        else if (msg.id === 'markAll') { doc.markAllDirty(); redraw(); result = '已强制全量重绘'; }
+        consoleBus.postMessage({ type: 'testResult', id: msg.id, ok: true, result });
+      } catch (e) {
+        consoleBus.postMessage({ type: 'testResult', id: msg.id, ok: false, result: String(e) });
+      }
+      return;
+    }
+    if (msg.type === 'clear') {
+      mainConsole.clear();
+    }
+  };
+}
+
+async function openDevConsole() {
+  if (window.achiFile && window.achiFile.openConsole) {
+    await window.achiFile.openConsole();      // Electron：主进程建窗
+    return;
+  }
+  if (consoleWin && !consoleWin.closed) { consoleWin.focus(); return; }
+  consoleWin = window.open(
+    './devconsole.html',
+    'achi-devconsole',
+    'width=600,height=560,menubar=no,toolbar=no,location=no,status=no'
+  );
+  if (!consoleWin) toast('控制台窗口被拦截了，允许一下弹窗', 'error');
+}
+
+/* 把 console 的警告/错误收进 mainConsole，子窗口轮询读取 */
+for (const level of ['warn', 'error']) {
+  const orig = console[level].bind(console);
+  console[level] = (...args) => {
+    orig(...args);
+    mainConsole.push(level, args);
+  };
+}
+window.addEventListener('error', e => {
+  mainConsole.push('error', [`${e.message}  @${e.filename}:${e.lineno}`]);
+});
+window.addEventListener('unhandledrejection', e => {
+  mainConsole.push('error', ['未处理的 Promise 拒绝: ' + String(e.reason)]);
+});
 
 /* 未保存标记：目前只在保存/新建/打开时清，笔一落就算脏 */
 function markDirty(v) {

@@ -24,7 +24,12 @@ export const COMMANDS = [
   { id: 'view:100', group: 'view', label: '实际大小', key: '⌘1' },
   { id: 'view:in', group: 'view', label: '放大', key: '⌘+' },
   { id: 'view:out', group: 'view', label: '缩小', key: '⌘-' },
-  { id: 'view:console', group: 'view', label: '开发者控制台', key: '⇧⌘D' },
+  { group: 'debug', label: '调试' },
+  { id: 'view:console', group: 'debug', label: '开发者控制台', key: '⇧⌘D' },
+  { id: 'debug:reload', group: 'debug', label: '重新加载界面', key: '⇧⌘R' },
+  { id: 'debug:markAll', group: 'debug', label: '强制全量重绘' },
+  { id: 'debug:testImage', group: 'debug', label: '测试：导入一张图' },
+  { id: 'debug:testRoundtrip', group: 'debug', label: '测试：保存解析往返' },
 ];
 
 const ICONS = {
