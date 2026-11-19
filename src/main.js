@@ -47,7 +47,10 @@ const view = $('view');
 // 代价是极端情况下可能撕裂，但对绘画来说延迟比撕裂重要得多。
 const vctx = view.getContext('2d', { desynchronized: true, alpha: false });
 view.style.touchAction = 'none';   // 防止触屏/笔被当作滚动手势
-let dpr = Math.min(window.devicePixelRatio || 1, 2);
+/* 上限 2 在 Retina 上意味着视口画布有 2200×1650 物理像素，
+ * 每帧要把这一整块作为图层内容交给系统合成 —— WKWebView 在这上面明显吃亏
+ * （实测帧率 37fps，Chromium 同尺寸能到 60）。降到 1.5 换帧率，肉眼几乎无差。 */
+let dpr = Math.min(window.devicePixelRatio || 1, 1.5);
 
 function resize() {
   const r = $('stage').getBoundingClientRect();
@@ -61,10 +64,36 @@ function resize() {
 /* ---------- 渲染：每帧一次，只搬离屏缓冲 ---------- */
 let rafId = 0;
 let needFrame = false;
+/* 用「有没有挂着一帧」这个布尔量来去重，而不是靠 rafId 是否为 0。
+ * WKWebView 在页面刚加载完、窗口还没真正上屏时，会把已排队的 rAF 回调丢掉；
+ * 如果这时拿 rafId 当锁，锁就永远解不开了 —— 之后每次 requestPaint 都直接 return，
+ * 画面再也不更新。真机上表现为「画得出来但看着发闷」。 */
+let framePending = false;
+let frameQueuedAt = 0;
+
+/* 性能探针：记录每帧合成耗时，以及「最近一次指针事件 → 这一帧画完」的间隔。
+ * 只在 window.__achiPerf 存在时记录，默认不占开销。 */
+const perfSamples = [];
+let lastPointerAt = 0;
+let lastPaintAt = 0;
+function perfMark() {
+  if (!window.__achiPerf) return;
+  const now = performance.now();
+  const rec = { frame: 0, inputLag: 0, gap: 0 };
+  if (perfMark._t0) rec.frame = now - perfMark._t0;
+  if (lastPointerAt) rec.inputLag = now - lastPointerAt;
+  if (lastPaintAt) rec.gap = now - lastPaintAt;
+  lastPaintAt = now;
+  perfSamples.push(rec);
+  if (perfSamples.length > 300) perfSamples.shift();
+  window.__achiPerf = perfSamples;
+}
 
 function paint() {
   rafId = 0;
   needFrame = false;
+  framePending = false;
+  perfMark._t0 = performance.now();
 
   // 先把脏块合进离屏缓冲（只处理变过的块）
   doc.collectDirty();
@@ -129,11 +158,18 @@ function paint() {
 
   $('st-zoom').textContent = Math.round(zoom * 100) + '%';
   $('st-mem').textContent = '撤销 ' + (history.bytes / 1048576).toFixed(1) + ' MB';
+  perfMark();
 }
 
 /* 请求一帧：合并同一帧内的多次请求，绝不重复绘制 */
 function requestPaint() {
-  if (rafId) return;
+  const now = performance.now();
+  /* 排队超过 400ms 还没画出来，说明那一帧被丢了（WKWebView 在页面刚加载完、
+   * 窗口还没上屏时会把已排队的 rAF 回调吞掉）。这时候必须重排，
+   * 否则标志位永远卡着，后续所有请求都被去重掉，画面彻底不更新。 */
+  if (framePending && now - frameQueuedAt < 400) return;
+  framePending = true;
+  frameQueuedAt = now;
   rafId = requestAnimationFrame(paint);
 }
 
@@ -165,7 +201,10 @@ function toDoc(e) {
 
 
 view.addEventListener('pointerdown', e => {
-  view.setPointerCapture(e.pointerId);
+  lastPointerAt = performance.now();
+  // 脚本合成的 PointerEvent 没有真实 pointer 可捕获，会抛 NotFoundError。
+  // 真机上捕获失败也不该让整个落笔流程断掉。
+  try { view.setPointerCapture(e.pointerId); } catch { /* 合成事件或已释放 */ }
   const p = toDoc(e);
   const pressure = pressureOf(e);
 
@@ -255,6 +294,7 @@ function syncBrushControls() {
 }
 
 view.addEventListener('pointermove', e => {
+  lastPointerAt = performance.now();
   const p = toDoc(e);
   $('st-pos').textContent = Math.round(p.x) + ', ' + Math.round(p.y);
 

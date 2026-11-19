@@ -21,6 +21,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/web"
 cp native/build/AchiPaint "$APP/Contents/MacOS/AchiPaint"
 cp build/icon.icns "$APP/Contents/Resources/icon.icns"
+# 目标目录已存在时 cp -R src 会复制成 web/src/src，必须先删
+rm -rf "$APP/Contents/Resources/web/src"
 cp -R src "$APP/Contents/Resources/web/src"
 cp native/Info.plist "$APP/Contents/Info.plist"
 

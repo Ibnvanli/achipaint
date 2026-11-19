@@ -47,7 +47,11 @@ final class WebHandler: NSObject, WKURLSchemeHandler {
 
         let headers = [
             "Content-Type": Self.mime(target.pathExtension),
-            "Cache-Control": "no-store",
+            /* 三件套缺一不可：光写 Cache-Control 时 WebKit 仍然会缓存脚本，
+             * 结果是改了代码重启 app 还是旧版本（踩过一次，很难看出来）。 */
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
             "Access-Control-Allow-Origin": "*",
         ]
         guard let resp = HTTPURLResponse(url: url, statusCode: 200,
@@ -95,6 +99,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     }
 
     func buildWindow() {
+        // 每次启动清掉 URL 缓存，别让旧脚本糊住新代码
+        URLCache.shared.removeAllCachedResponses()
+        URLCache.shared.diskCapacity = 0
+        URLCache.shared.memoryCapacity = 0
+
         guard let res = Bundle.main.resourceURL else { return }
         let webRoot = res.appendingPathComponent("web")
 
@@ -139,37 +148,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         guard selfTest else { return }
         let js = """
         const wait = ms => new Promise(r => setTimeout(r, ms));
-        for (let i = 0; i < 60 && !(window.__achi && __achi.hk && __achi.hk.ready); i++) await wait(100);
+        window.__errs = [];
+        window.onerror = (m, src, line, col) => { window.__errs.push(String(m) + ' @' + line + ':' + col); };
+        window.addEventListener('unhandledrejection', e => window.__errs.push('reject: ' + String(e.reason)));
+        for (let i = 0; i < 60 && !(window.__achi && window.__achi.hk && __achi.hk.ready); i++) await wait(100);
+        const out = {
+          hkReady: !!(window.__achi && __achi.hk && __achi.hk.ready),
+          visibility: document.visibilityState,
+          hidden: document.hidden,
+        };
+
+        window.__achiPerf = [];
+        __achi.redraw();
+        await wait(300);
+        out.afterRedraw = (window.__achiPerf || []).length;
+        out.zoomText = document.getElementById('st-zoom').textContent;
 
         const view = document.getElementById('view');
-        const ctx = view.getContext('2d');
-        const attrs = ctx.getContextAttributes ? ctx.getContextAttributes() : null;
-
-        // 合成输入 + rAF：量从「事件送出」到「浏览器排帧」的调度延迟
         const rect = view.getBoundingClientRect();
-        const out = [];
-        for (let n = 0; n < 30; n++) {
-          const t0 = performance.now();
-          view.dispatchEvent(new PointerEvent('pointermove', {
-            clientX: rect.left + 200 + n * 3,
-            clientY: rect.top + 300,
-            pressure: 1, pointerId: 1, pointerType: 'mouse', bubbles: true, isPrimary: true,
-          }));
-          await new Promise(r => requestAnimationFrame(r));
-          out.push(performance.now() - t0);
-        }
-        out.sort((a,b)=>a-b);
-        const pct = p => out[Math.min(out.length-1, Math.floor(out.length*p))];
+        out.rect = [Math.round(rect.width), Math.round(rect.height)];
 
-        return JSON.stringify({
-          desynchronized: attrs ? attrs.desynchronized : 'no-getContextAttributes',
-          alpha: attrs ? attrs.alpha : null,
-          coalescedEvents: typeof PointerEvent.prototype.getCoalescedEvents === 'function',
-          offscreenCanvas: typeof OffscreenCanvas !== 'undefined',
-          rafFrameMs: { median: +pct(0.5).toFixed(2), p90: +pct(0.9).toFixed(2), max: +out[out.length-1].toFixed(2) },
-          pixelRatio: devicePixelRatio,
-          canvas: [view.width, view.height],
-        });
+        const fire = (t, x, y) => view.dispatchEvent(new PointerEvent(t, {
+          clientX: x, clientY: y, pressure: 1, pointerId: 1, pointerType: 'pen',
+          bubbles: true, isPrimary: true,
+        }));
+        fire('pointerdown', rect.left + 150, rect.top + 250);
+        out.hkActiveAfterDown = __achi.hk.active;
+        for (let i = 0; i < 40; i++) {
+          fire('pointermove', rect.left + 150 + i * 8, rect.top + 250);
+          await wait(8);
+        }
+        fire('pointerup', rect.left + 470, rect.top + 250);
+        await wait(400);
+
+        out.hist = __achi.history.stack.length;
+        out.perfCount = (window.__achiPerf || []).length;
+        let ink = 0;
+        for (const t of __achi.doc.layer.canvas.tiles.values()) {
+          const d = t.ctx.getImageData(0, 0, 256, 256).data;
+          for (let k = 3; k < d.length; k += 4) if (d[k] > 8) ink++;
+        }
+        out.ink = ink;
+        out.errs = (window.__errs || []).slice(0, 5);
+
+        const perfs = (window.__achiPerf || []).slice(-300);
+        const fr = perfs.map(p => p.frame).filter(v => v > 0).sort((a,b)=>a-b);
+        const lag = perfs.map(p => p.inputLag).filter(v => v > 0).sort((a,b)=>a-b);
+        const gaps = perfs.map(p => p.gap).filter(v => v > 0).sort((a,b)=>a-b);
+        const q = (arr, p) => arr.length ? +arr[Math.min(arr.length-1, Math.floor(arr.length*p))].toFixed(2) : null;
+        out.perf = {
+          samples: perfs.length,
+          frameMs: { p50: q(fr,0.5), p90: q(fr,0.9), max: q(fr,1) },
+          inputLagMs: { p50: q(lag,0.5), p90: q(lag,0.9), max: q(lag,1) },
+          frameGapMs: { p50: q(gaps,0.5), p90: q(gaps,0.9), max: q(gaps,1) },
+          fps: gaps.length ? +(1000 / gaps.reduce((a,b)=>a+b,0) * gaps.length).toFixed(1) : null,
+        };
+
+        // 页面到底加载的是哪一版 main.js
+        try {
+          const txt = await (await fetch('achi://local/src/main.js')).text();
+          out.jsVersion = {
+            hasFrameQueuedAt: txt.includes('frameQueuedAt'),
+            hasPerfMark: txt.includes('perfMark'),
+            length: txt.length,
+          };
+        } catch (e) { out.jsVersion = 'fetch-fail: ' + e; }
+
+        // 手动抓一帧，看 st-zoom 会不会被 paint 改写
+        const zoomEl = document.getElementById('st-zoom');
+        const before = zoomEl.textContent;
+        zoomEl.textContent = 'PROBE';
+        __achi.redraw();
+        await wait(600);
+        out.probe = { before, after: zoomEl.textContent };
+        // 直接手动跑一次 requestAnimationFrame 看它到底回不回调
+        let rafFired = false;
+        const t0 = performance.now();
+        await new Promise(r => requestAnimationFrame(() => { rafFired = true; r(); }));
+        out.raf = { fired: rafFired, ms: +(performance.now() - t0).toFixed(1) };
+        return JSON.stringify(out);
         """
 
         webView.callAsyncJavaScript(js, arguments: [:], in: nil, in: .page) { result in
