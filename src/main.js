@@ -486,6 +486,7 @@ function endStroke() {
     hk.end();
     if (pending) history.commit(pending);
     op('抬笔', tool, '历史 ' + history.stack.length);
+    refreshThumbs();
     pending = null;
     bus.emit('stroke:end', {});
     requestPaint();
@@ -495,6 +496,7 @@ function endStroke() {
   stroke.end();
   if (pending) history.commit(pending);
   op('抬笔', tool, '历史 ' + history.stack.length);
+  refreshThumbs();
 
   stroke = null; pending = null;
   bus.emit('stroke:end', {});
@@ -1399,6 +1401,7 @@ function setMaskMode(on) {
   doc.maskMode = !!(on && l && l.mask);
   $('btn-mask').classList.toggle('on', doc.maskMode);
   redraw();
+  renderLayers();   // 蒙版行要出现 / 高亮
 }
 
 $('btn-mask').onclick = () => setMaskMode(!doc.maskMode);
@@ -1454,6 +1457,73 @@ function startRename(node, span) {
   });
 }
 
+/* ---------- 图层缩略图 ----------
+ * 缩略图要重画整层的瓦片，所以按「内容有没有变过」缓存，不能每次渲染都算。
+ */
+function layerThumb(node, size = 26) {
+  if (node.isGroup) return null;
+  const tc = node.canvas;
+  if (!tc || tc.tiles.size === 0) return null;
+
+  const stamp = tc.tiles.size + ':' + history.stack.length + ':' + (tc._dirtyStamp || 0);
+  if (node._thumbKey === stamp && node._thumbURL) return node._thumbURL;
+
+  const cv = newCanvas(size, size);
+  const ctx = cv.getContext('2d');
+  const s2 = Math.min(size / doc.w, size / doc.h);
+  const w = Math.max(1, Math.round(doc.w * s2));
+  const h = Math.max(1, Math.round(doc.h * s2));
+  ctx.imageSmoothingEnabled = true;
+  for (const t of tc.tiles.values()) {
+    ctx.drawImage(t.canvas, 0, 0, 256, 256,
+      Math.floor(t.col * 256 * s2), Math.floor(t.row * 256 * s2),
+      Math.ceil(256 * s2), Math.ceil(256 * s2));
+  }
+  node._thumbKey = stamp;
+  node._thumbURL = cv.toDataURL();
+  return node._thumbURL;
+}
+
+/* 笔一落完就刷新缩略图，但别重建整个图层面板（会闪、也会丢掉正在进行的交互） */
+function refreshThumbs() {
+  const box = $('layers');
+  if (!box) return;
+  for (const row of box.querySelectorAll('.lay-row[data-uid]')) {
+    const node = nodeById.get(row.dataset.uid);
+    if (!node || node.isGroup) continue;
+    const t = row.querySelector('.lay-thumb');
+    if (!t) continue;
+    const url = layerThumb(node);
+    if (url) t.style.backgroundImage = `url(${url})`;
+  }
+}
+
+/* 内容每变一次就打一个戳，缩略图据此判断要不要重算 */
+function bumpThumbStamp(tc) {
+  if (tc) tc._dirtyStamp = (tc._dirtyStamp || 0) + 1;
+}
+
+function maskThumb(node, size = 26) {
+  const m = node.mask;
+  if (!m || m.tiles.size === 0) return null;
+  const stamp = 'm' + m.tiles.size + ':' + history.stack.length + ':' + (m._dirtyStamp || 0);
+  if (node._maskThumbKey === stamp && node._maskThumbURL) return node._maskThumbURL;
+
+  const cv = newCanvas(size, size);
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, size, size);            // 蒙版看不见 = 黑底
+  const s2 = Math.min(size / doc.w, size / doc.h);
+  for (const t of m.tiles.values()) {
+    ctx.drawImage(t.canvas, 0, 0, 256, 256,
+      Math.floor(t.col * 256 * s2), Math.floor(t.row * 256 * s2),
+      Math.ceil(256 * s2), Math.ceil(256 * s2));
+  }
+  node._maskThumbKey = stamp;
+  node._maskThumbURL = cv.toDataURL();
+  return node._maskThumbURL;
+}
+
 function layerRow(node, depth) {
   const row = document.createElement('div');
   row.className = 'lay-row'
@@ -1487,13 +1557,19 @@ function layerRow(node, depth) {
     redraw();
   };
 
+  const thumb = document.createElement('span');
+  thumb.className = 'lay-thumb';
+  const url = layerThumb(node);
+  if (url) thumb.style.backgroundImage = `url(${url})`;
+  else thumb.classList.add('empty');
+
   const name = document.createElement('span');
   name.className = 'lay-name';
   name.textContent = node.name;
   name.title = node.name + '（双击改名）';
   name.ondblclick = e => { e.stopPropagation(); startRename(node, name); };
 
-  row.append(exp, eye, name);
+  row.append(exp, eye, thumb, name);
   // 这里**不能**调 renderLayers()：整棵树重建的话，
   // 第一次点击就把这个元素换掉了，第二次点在新元素上，浏览器不会认成双击。
   row.onclick = () => selectNode(node);
@@ -1590,10 +1666,44 @@ function renderLayers() {
   const walk = (nodes, depth) => {
     for (const n of nodes) {
       box.appendChild(layerRow(n, depth));
+      if (!n.isGroup && n.mask) box.appendChild(maskRow(n, depth + 1));
       if (n.isGroup && n.expanded) walk(n.children, depth + 1);
     }
   };
   walk(doc.root.children, 0);
+}
+
+/* 蒙版单独一行：点它进/出蒙版模式，缩略图黑底白 = 遮住多少一眼看得出 */
+function maskRow(node, depth) {
+  const row = document.createElement('div');
+  row.className = 'lay-row mask-row' + (doc.maskMode && doc.activeLeaf === node ? ' on' : '');
+  row.style.paddingLeft = (4 + depth * 14) + 'px';
+
+  const exp = document.createElement('span');
+  exp.className = 'lay-exp ghost';
+
+  const icon = document.createElement('span');
+  icon.className = 'lay-eye on';
+  icon.textContent = '◐';
+  icon.title = '蒙版';
+
+  const thumb = document.createElement('span');
+  thumb.className = 'lay-thumb mask';
+  const mu = maskThumb(node);
+  if (mu) thumb.style.backgroundImage = `url(${mu})`;
+
+  const name = document.createElement('span');
+  name.className = 'lay-name';
+  name.textContent = '蒙版';
+  name.title = '点一下进入蒙版模式（画笔=遮住，橡皮=恢复）';
+
+  row.append(exp, icon, thumb, name);
+  row.onclick = () => {
+    doc.select(node);
+    setMaskMode(true);
+    renderLayers();
+  };
+  return row;
 }
 
 /* ---- 拖拽：把图层挪进组、挪出组、上下换位 ---- */

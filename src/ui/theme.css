@@ -765,3 +765,29 @@ canvas { display: block; position: absolute; inset: 0; }
 }
 .fb-reset:hover, .fb-done:hover { border-color: var(--accent); color: var(--fg-0); }
 .fb-done { background: var(--accent); border-color: var(--accent); color: #141413; font-weight: 600; }
+
+/* 图层缩略图 */
+.lay-thumb {
+  width: 26px; height: 26px;
+  flex: 0 0 auto;
+  border-radius: 3px;
+  border: 1px solid var(--line-2);
+  background-color: #fff;
+  background-size: cover;
+  background-position: center;
+  image-rendering: auto;
+}
+.lay-thumb.empty {
+  background-image:
+    linear-gradient(45deg, #333 25%, transparent 25%, transparent 75%, #333 75%),
+    linear-gradient(45deg, #333 25%, #222 25%, #222 75%, #333 75%);
+  background-size: 8px 8px;
+  background-position: 0 0, 4px 4px;
+}
+.lay-thumb.mask {
+  filter: contrast(1.15);
+}
+
+/* 蒙版行比图层行暗一点，区分层级 */
+.lay-row.mask-row { opacity: .92; }
+.lay-row.mask-row .lay-name { color: var(--fg-1); font-size: var(--t-s); }

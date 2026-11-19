@@ -437,8 +437,13 @@ export class Doc {
           sc.globalCompositeOperation = 'destination-in';
           sc.drawImage(mt.canvas, mt.col * TILE - bx, mt.row * TILE - by);
           sc.globalCompositeOperation = 'source-over';
-        } else {
-          sc.clearRect(0, 0, s.width, s.height);   // 蒙版这块是空的 = 整块看不见
+        }
+        /* 蒙版这块没有瓦片 = 全显示，什么都别做。
+         * 以前这里写的是 clearRect（当成「整块看不见」），后果是：
+         * 蒙版上只擦了一个小地方，其余所有块都被当成「蒙版为空」清掉 ——
+         * 表现就是「加了蒙版一擦，整张画灰飞烟灭」。 */
+        else {
+          // 保留 sc 里的内容不动
         }
 
         ctx.globalAlpha = n.opacity;
