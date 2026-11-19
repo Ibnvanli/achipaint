@@ -1,0 +1,12 @@
+{
+  "name": "achipaint",
+  "productName": "AchiPaint",
+  "version": "0.1.0",
+  "description": "轻核心、边缘插件的绘画工具",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "app": "bash native/build.sh",
+    "dev": "python3 serve.py"
+  }
+}

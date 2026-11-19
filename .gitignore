@@ -4,3 +4,9 @@ node_modules/
 
 # 过程文件，不进仓库
 .oil-ui/
+
+# 打包产物
+/dist/
+
+# 构建产物
+/native/build/

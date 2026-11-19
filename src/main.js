@@ -13,6 +13,12 @@ import pngExporter from './plugins/export-png.js';
 
 const $ = id => document.getElementById(id);
 
+/* Electron 壳里给自绘标题栏让出红绿灯的位置，并把它变成可拖动区域。
+ * 浏览器里没有这个类，所以网页版布局一个像素都不变。 */
+if (/\.Electron/i.test(navigator.userAgent) || navigator.userAgent.includes('Electron')) {
+  document.documentElement.classList.add('electron');
+}
+
 /* ---------- 状态 ---------- */
 const doc = new Doc(2480, 3508);
 const brush = new Brush();

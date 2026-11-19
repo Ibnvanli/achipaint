@@ -80,6 +80,17 @@ input, textarea, select, [contenteditable="true"] {
 }
 
 .titlebar { grid-column: 1 / -1; background: var(--bg-1); display: flex; align-items: center; padding: 0 var(--s-3); gap: var(--s-3); }
+
+/* Electron：标题栏左让出 78px 给 macOS 红绿灯，整条可拖动，按钮除外 */
+html.electron .titlebar {
+  padding-left: 84px;
+  -webkit-app-region: drag;
+}
+html.electron .titlebar button,
+html.electron .titlebar a,
+html.electron .titlebar select {
+  -webkit-app-region: no-drag;
+}
 .toolcol { background: var(--bg-1); padding: var(--s-2) 0; display: flex; flex-direction: column; align-items: center; gap: var(--s-1); }
 .stage { background: var(--bg-0); position: relative; overflow: hidden; }
 .sidebar {

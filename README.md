@@ -48,15 +48,46 @@
 
 ---
 
-## 跑起来
+## 做成 macOS 应用
+
+```sh
+npm run app            # 或 bash native/build.sh
+open ~/Applications/AchiPaint.app
+```
+
+`.app` 约 **680KB**，常驻内存约 **90MB**。装好之后双击就能画，不依赖终端、不依赖服务。
+
+外壳是 `native/AchiPaint.swift`（Swift + WKWebView），不是 Electron。原因见下面「为什么不是 Electron」。
+
+### 开发模式
 
 ```sh
 python3 serve.py
-# 打开 http://127.0.0.1:8899/src/index.html
+# 浏览器打开 http://127.0.0.1:8899/src/index.html
 ```
+
+`src/` 里的页面两种方式共用，改完刷新就见效。
 
 不能直接双击 `index.html`：项目用原生 ES module 加载，还用 `fetch` 取 `.myb` 笔刷和 wasm，
 `file://` 协议下会被浏览器拦掉。
+
+### 为什么不是 Electron
+
+macOS 27 拒绝 ad-hoc 签名进程调用 `task_name_for_pid`，而 Electron 启动时会做这项检查 ——
+**连 Electron 官方原版 .app 都打不开**，报 `codesign_util.cc:79 task_name_for_pid`。
+要么买开发者证书（$99/年）做正式签名，要么换原生壳。
+
+换 WKWebView 之后实测：
+
+| 项目 | 结果 |
+| --- | --- |
+| `desynchronized` canvas | ✅ 支持（低延迟的关键） |
+| `getCoalescedEvents()` | ✅ 支持 |
+| `requestAnimationFrame` | 稳定 17ms / 60fps 满帧 |
+| 体积 | 680KB（Electron 约 252MB） |
+| 常驻内存 | 91MB（Electron 约 200MB+） |
+
+之前担心的「WKWebView 不支持 `desynchronized`」不成立，所以这条路没有牺牲手感。
 
 ### 快捷键
 
@@ -88,6 +119,11 @@ src/
   brushes/         .myb 笔刷预设
   plugins/         边缘插件（目前只有 PNG 导出）
   main.js  index.html
+native/          macOS 原生壳
+  AchiPaint.swift   Swift + WKWebView，约 200 行
+  build.sh          编译并组装 .app
+  Info.plist
+build/           应用图标与签名用的 entitlements
 ```
 
 设计边界见 [ARCHITECTURE.md](ARCHITECTURE.md)，
