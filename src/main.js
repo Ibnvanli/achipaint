@@ -179,10 +179,35 @@ function paint() {
 
     // 浮动选区画在最上面，跟手走
     if (floating) {
+      const fcx = floating.x + floating.w / 2;
+      const fcy = floating.y + floating.h / 2;
+
       vctx.save();
-      vctx.translate(floating.x + floating.w / 2, floating.y + floating.h / 2);
+      vctx.translate(fcx, fcy);
       vctx.rotate(floating.angle * Math.PI / 180);
       vctx.drawImage(floating.canvas, -floating.w / 2, -floating.h / 2);
+      vctx.restore();
+
+      /* 变换框：跟内容一起转的虚线框 + 四角手柄。
+       * 这才是「选中了」的可视信号 —— 只有一个底部滑块的话，看不出选中了哪一块。 */
+      vctx.save();
+      vctx.translate(fcx, fcy);
+      vctx.rotate(floating.angle * Math.PI / 180);
+
+      vctx.setLineDash([5 / zoom, 4 / zoom]);
+      vctx.lineWidth = 1.5 / zoom;
+      vctx.strokeStyle = 'rgba(223, 160, 60, .95)';
+      vctx.strokeRect(-floating.w / 2, -floating.h / 2, floating.w, floating.h);
+
+      vctx.setLineDash([]);
+      vctx.fillStyle = '#dfa03c';
+      const hs = 7 / zoom;
+      for (const [hx, hy] of [
+        [-floating.w / 2, -floating.h / 2], [floating.w / 2, -floating.h / 2],
+        [-floating.w / 2, floating.h / 2], [floating.w / 2, floating.h / 2],
+      ]) {
+        vctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
+      }
       vctx.restore();
     }
 
@@ -298,13 +323,39 @@ view.addEventListener('pointerdown', e => {
     const node = doc.layer;
     const bounds = node ? boundsOf(node.canvas) : null;
 
+    /* 已经浮着一块：在它里面就继续拖，否则先落下 */
+    if (floating) {
+      if (p.x >= floating.x && p.x <= floating.x + floating.w
+        && p.y >= floating.y && p.y <= floating.y + floating.h) {
+        gesture = { kind: 'float-move', x0: p.x, y0: p.y, fx: floating.x, fy: floating.y };
+        return;
+      }
+      commitFloating();
+    }
+
+    /* 点中哪一笔就拎哪一笔 —— 用连通块近似「一笔」。
+     * 点空白处（没连通内容）才退回整层移动。 */
+    if (!e.altKey && node) {
+      const cb = connectedBounds(node.canvas, p.x, p.y);
+      if (cb) {
+        doc.selection = cb;
+        if (liftSelection()) {
+          op('移动', '点选连通块', (cb.x1 - cb.x0) + '×' + (cb.y1 - cb.y0));
+          gesture = { kind: 'float-move', x0: p.x, y0: p.y, fx: floating.x, fy: floating.y };
+          return;
+        }
+      }
+    }
+
     /* 按住 ⌥ 拖动 = 绕内容中心旋转。
      * 用包围盒中心而不是画布中心 —— 内容偏在一角时，绕画布中心转会甩出去。 */
     if (e.altKey && bounds) {
-      const cx = (bounds.x0 + bounds.x1) / 2;
-      const cy = (bounds.y0 + bounds.y1) / 2;
+      // 浮着一块就转这一块，否则才转整层
+      const cx = floating ? floating.x + floating.w / 2 : (bounds.x0 + bounds.x1) / 2;
+      const cy = floating ? floating.y + floating.h / 2 : (bounds.y0 + bounds.y1) / 2;
       gesture = {
         kind: 'rotate', node, bounds, cx, cy,
+        target: floating ? 'float' : 'layer',
         a0: Math.atan2(p.y - cy, p.x - cx),
         angle: 0,
       };
@@ -718,6 +769,68 @@ window.addEventListener('drop', async e => {
   }
 });
 
+/* ---------- 点选连通块 ----------
+ * 图层是像素，没有「笔画对象」。但一笔画出来的东西在像素上是**连通的**，
+ * 所以用泛洪找出点中的那一块，取它的包围盒 —— 这就约等于「选中这一笔」。
+ * 点空白处返回 null，调用方退回整层移动。
+ */
+function layerImageData(tc) {
+  const cv = newCanvas(tc.w, tc.h);
+  const ctx = cv.getContext('2d');
+  for (const t of tc.tiles.values()) ctx.drawImage(t.canvas, t.col * TILE, t.row * TILE);
+  return ctx.getImageData(0, 0, tc.w, tc.h);
+}
+
+/**
+ * 从 (sx,sy) 泛洪，返回连通块的包围盒。
+ * 用扫描线填充，比逐像素 BFS 快一个量级。
+ */
+function connectedBounds(tc, sx, sy) {
+  const x0i = Math.floor(sx), y0i = Math.floor(sy);
+  if (x0i < 0 || y0i < 0 || x0i >= tc.w || y0i >= tc.h) return null;
+
+  const img = layerImageData(tc);
+  const d = img.data, W = tc.w, H = tc.h;
+  const at = (x, y) => ((y * W + x) << 2) + 3;   // alpha 偏移
+
+  if (d[at(x0i, y0i)] < 8) return null;          // 点在透明处
+
+  const seen = new Uint8Array(W * H);
+  let minX = x0i, maxX = x0i, minY = y0i, maxY = y0i;
+  const stack = [[x0i, y0i]];
+
+  while (stack.length) {
+    const [px, py] = stack.pop();
+    let xl = px, xr = px;
+    // 向左扩到边界
+    while (xl > 0 && !seen[py * W + xl - 1] && d[at(xl - 1, py)] >= 8) xl--;
+    // 向右扩
+    while (xr < W - 1 && !seen[py * W + xr + 1] && d[at(xr + 1, py)] >= 8) xr++;
+
+    if (xl < minX) minX = xl;
+    if (xr > maxX) maxX = xr;
+    if (py < minY) minY = py;
+    if (py > maxY) maxY = py;
+
+    for (let x = xl; x <= xr; x++) seen[py * W + x] = 1;
+
+    // 上下两行找新的种子
+    for (const ny of [py - 1, py + 1]) {
+      if (ny < 0 || ny >= H) continue;
+      let run = false;
+      for (let x = xl; x <= xr; x++) {
+        if (!seen[ny * W + x] && d[at(x, ny)] >= 8) {
+          if (!run) { stack.push([x, ny]); run = true; }
+        } else {
+          run = false;
+        }
+      }
+    }
+  }
+
+  return { x0: minX, y0: minY, x1: maxX + 1, y1: maxY + 1 };
+}
+
 /* ---------- 浮动选区 ----------
  * 框选一块，把它从图层里拎出来：可以拖、可以转，松手才落回去。
  * 这是「移动单个/多个笔画」的现实做法 —— 底子是像素，没有笔画对象，
@@ -780,14 +893,25 @@ function commitFloating() {
   syncFloatBar();
 
   const tc = f.tc;
-  const tmp = newCanvas(f.w, f.h);
+  /* 临时画布要按**旋转后**的包围盒来开，不能还用原尺寸 ——
+   * 否则 45° 转完四个角直接被裁掉，而且不可恢复。 */
+  const rad = f.angle * Math.PI / 180;
+  const ca = Math.abs(Math.cos(rad)), sa = Math.abs(Math.sin(rad));
+  const tw = Math.max(1, Math.ceil(f.w * ca + f.h * sa));
+  const th = Math.max(1, Math.ceil(f.w * sa + f.h * ca));
+
+  const tmp = newCanvas(tw, th);
   const tctx = tmp.getContext('2d');
-  tctx.translate(f.w / 2, f.h / 2);
-  tctx.rotate(f.angle * Math.PI / 180);
+  tctx.translate(tw / 2, th / 2);
+  tctx.rotate(rad);
   tctx.drawImage(f.canvas, -f.w / 2, -f.h / 2);
 
-  tc.forEachTileInBounds(f.x, f.y, f.x + f.w - 1, f.y + f.h - 1, ctx => {
-    ctx.drawImage(tmp, f.x, f.y);
+  // 绕中心转，所以中心不变：左上角 = 中心 - 新尺寸/2
+  const left = Math.round(f.x + f.w / 2 - tw / 2);
+  const top = Math.round(f.y + f.h / 2 - th / 2);
+
+  tc.forEachTileInBounds(left, top, left + tw - 1, top + th - 1, ctx => {
+    ctx.drawImage(tmp, left, top);
   });
   tc.markDirty(0, 0, doc.w, doc.h);
 
@@ -1069,10 +1193,17 @@ function gestureMove(e) {
   if (g.kind === 'rotate') {
     const a = Math.atan2(p.y - g.cy, p.x - g.cx);
     let deg = (a - g.a0) * 180 / Math.PI;
-    // 按住 ⇧ 吸附到 15°
     if (e.shiftKey) deg = Math.round(deg / 15) * 15;
     g.angle = deg;
-    showRotateHint(deg);
+
+    if (g.target === 'float' && floating) {
+      // 拖浮动块：直接改角度，实时预览（这才是「够实时」）
+      floating.angle = deg;
+      syncFloatBar();
+      requestPaint();
+    } else {
+      showRotateHint(deg);
+    }
     return;
   }
 
@@ -1112,8 +1243,9 @@ function gestureEnd() {
 
   if (g.kind === 'rotate') {
     hideRotateHint();
-    const deg = g.angle || 0;
     gesture = null;
+    if (g.target === 'float') { requestPaint(); return; }   // 浮动的角度已经生效，等放置
+    const deg = g.angle || 0;
     if (Math.abs(deg) >= 0.5) rotateLayer(g.node, deg);
     else requestPaint();
     return;
