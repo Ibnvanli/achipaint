@@ -217,3 +217,8 @@ build/           应用图标与签名用的 entitlements
 本项目按 MIT 使用）编译出的 wasm 产物，并**修改了它的源码**。
 修改内容、基线 commit 与重建步骤见 [NOTICE](NOTICE) 和 [third-party/hokusai/](third-party/hokusai/)，
 改动补丁在 [patches/](patches/)。
+
+## 还没做的
+
+一大串，按「缺了最难受」排好了，见 [ROADMAP.md](ROADMAP.md)。
+
