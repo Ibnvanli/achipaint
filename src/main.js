@@ -339,7 +339,7 @@ view.addEventListener('pointerdown', e => {
   // 画笔走 hokusai（.myb 笔刷）；橡皮和「hokusai 没就位」都还走内置引擎
   if (tool === 'brush' && hk.ready) {
     const ok = hk.begin(p.x, p.y, pressure, tiltOpts(e, p));
-    if (ok) { markDirty(true); requestPaint(); bus.emit('stroke:begin', { x: p.x, y: p.y }); return; }
+    if (ok) { markDirty(true); op('落笔', tool, Math.round(p.x) + ',' + Math.round(p.y)); requestPaint(); bus.emit('stroke:begin', { x: p.x, y: p.y }); return; }
   }
 
   stroke = new Stroke(paintBrush, layer);
@@ -418,10 +418,15 @@ view.addEventListener('pointermove', e => {
 });
 
 function endStroke() {
-  if (gesture) { gestureEnd(); return; }
+  if (gesture) {
+    op('手势结束', gesture.kind || '?');
+    gestureEnd();
+    return;
+  }
   if (hk.active) {
     hk.end();
     if (pending) history.commit(pending);
+    op('抬笔', tool, '历史 ' + history.stack.length);
     pending = null;
     bus.emit('stroke:end', {});
     requestPaint();
@@ -430,6 +435,7 @@ function endStroke() {
   if (!stroke) return;
   stroke.end();
   if (pending) history.commit(pending);
+  op('抬笔', tool, '历史 ' + history.stack.length);
 
   stroke = null; pending = null;
   bus.emit('stroke:end', {});
@@ -758,7 +764,7 @@ function liftSelection() {
   });
   tc.markDirty(x, y, x + w, y + h);
 
-  op('浮起选区', w + '×' + h);
+  op('选区', '浮起', w + '×' + h);
   floating = { canvas: cv, x, y, w, h, angle: 0, tc, rect: { x, y, w, h }, pending, moved: true };
   doc.selection = null;
   syncFloatBar();
@@ -914,7 +920,7 @@ function rotateLayer(node, deg) {
 
   tc.markDirty(0, 0, doc.w, doc.h);
   if (pending) history.commit(pending);
-  op('旋转', Math.round(deg) + '°');
+  op('变换', '旋转', Math.round(deg) + '°');
   redraw();
   toast(`已旋转 ${deg >= 0 ? '+' : ''}${Math.round(deg)}°`);
 }
@@ -940,6 +946,7 @@ view.addEventListener('wheel', e => {
 
 /* ---------- 适应窗口 ---------- */
 function fit() {
+  op('视图', '适应窗口');
   const r = $('stage').getBoundingClientRect();
   const z = Math.min(r.width / doc.w, r.height / doc.h) * 0.92;
   doc.view.zoom = z;
@@ -955,7 +962,7 @@ const TOOL_KEYS = { b: 'brush', e: 'eraser', i: 'pick', v: 'move', m: 'select', 
 function setTool(next) {
   // 浮着一块时切工具，先把它落回图层，否则它会一直挂在那儿
   if (floating && next !== 'select') commitFloating();
-  if (tool !== next) op('切换工具', next);
+  if (tool !== next) op('工具', next);
   tool = next;
   document.querySelectorAll('[data-tool]').forEach(b => {
     b.classList.toggle('on', b.dataset.tool === tool);
@@ -1020,7 +1027,7 @@ function commitMove(node, dx, dy) {
     Math.min(b.x0, b.x0 + dx), Math.min(b.y0, b.y0 + dy),
     Math.max(b.x1, b.x1 + dx), Math.max(b.y1, b.y1 + dy));
 
-  op('移动图层', dx + ', ' + dy);
+  op('变换', '移动', dx + ', ' + dy);
   translateTiles(target, dx, dy);
   if (node.mask) translateTiles(node.mask, dx, dy);
 
@@ -1096,6 +1103,9 @@ function gestureEnd() {
   if (g.kind === 'select') {
     const r = g.rect;
     doc.selection = (r && (r.x1 - r.x0) > 1 && (r.y1 - r.y0) > 1) ? r : null;
+    op('选区', doc.selection
+      ? '框选 ' + Math.round(doc.selection.x1 - doc.selection.x0) + '×' + Math.round(doc.selection.y1 - doc.selection.y0)
+      : '清空');
     requestPaint();
     return;
   }
@@ -1372,6 +1382,7 @@ const BLEND_MODES = [
 ];
 
 function doDelete(node) {
+  op('图层', '删除', node && node.name);
   if (doc.deleteNode(node)) {
     renderLayers();
     redraw();
@@ -1530,8 +1541,14 @@ document.querySelectorAll('.panel > h3').forEach(h => {
   };
 });
 
-$('btn-add-layer').onclick = () => { doc.addLayer(); renderLayers(); redraw(); };
-$('btn-add-group').onclick = () => { doc.addGroup(); renderLayers(); redraw(); };
+$('btn-add-layer').onclick = () => {
+  doc.addLayer(); op('图层', '新建', doc.activeLeaf && doc.activeLeaf.name);
+  renderLayers(); redraw();
+};
+$('btn-add-group').onclick = () => {
+  doc.addGroup(); op('图层', '新建组');
+  renderLayers(); redraw();
+};
 
 /* 撤销/重做的按钮绑定统一放在下面的命令分发处，别在这里再绑一次 */
 
@@ -1780,7 +1797,7 @@ async function doSave(forceDialog = false) {
     });
     const r = await saveFile(blob, { name: docName, forceDialog });
     if (r.saved) {
-      op('保存', r.name + (r.path ? '' : ' (无路径)'));
+      op('文件', '保存', r.name + (r.path ? '' : '(无路径)'));
       // 保存成功才改名字；下载兜底时保留原名
       if (!r.download) setDocName(r.name.replace(/\.achi$/i, ''));
       markDirty(false);
@@ -1900,7 +1917,7 @@ async function doOpen(fromPath) {
       ? await openByPath(fromPath)
       : await openFile();
     if (!picked) return false;
-    op('打开', picked.name);
+    op('文件', '打开', picked.name);
     return await openFromBuffer(picked.buffer, picked.name, picked.path);
   } catch (e) {
     showFileError('打开失败', e);
@@ -2002,7 +2019,7 @@ const mainConsole = {
       try { return JSON.stringify(a); } catch { return String(a); }
     }).join(' ');
     this.logs.push({ level, text, t: Date.now() });
-    if (this.logs.length > 800) this.logs.shift();
+    if (this.logs.length > 2000) this.logs.shift();
   },
   clear() { this.logs = []; },
 };
@@ -2095,9 +2112,46 @@ for (const level of ['log', 'info', 'warn', 'error']) {
 
 /* 关键操作单独记一笔：文件、文档、工具、变换。
  * 这些不是 error，但出问题时「最后一步做了什么」往往才是线索。 */
-function op(...parts) {
-  mainConsole.push('op', parts);
+/**
+ * 操作流水：不是错误，但「最后做了什么」往往才是线索。
+ * 用法：op('图层', '新建', name) —— 第一段是类别。
+ */
+function op(cat, ...parts) {
+  mainConsole.push('op', ['[' + cat + '] ' + parts.join(' ')]);
 }
+
+/* ---------- 全局操作捕获 ----------
+ * 光靠手动埋点会漏 —— 漏掉的那一步恰恰可能是「伪装成正常」的那个 bug。
+ * 这里把点击、快捷键、落笔、滚轮都收一份，宁可吵也别缺。
+ */
+window.addEventListener('click', e => {
+  const t = e.target && e.target.closest
+    ? e.target.closest('[data-tool], [data-cmd], button, .splash-card, .lay-row')
+    : null;
+  if (!t) return;
+  const label = t.dataset.tool || t.dataset.cmd || t.id
+    || (t.textContent || '').trim().slice(0, 14);
+  op('点击', label || '(无标签)');
+}, true);
+
+window.addEventListener('keydown', e => {
+  const mods = (e.metaKey ? '⌘' : '') + (e.shiftKey ? '⇧' : '') + (e.altKey ? '⌥' : '') + (e.ctrlKey ? '⌃' : '');
+  const k = e.key.length === 1 ? e.key : e.key;
+  // 只记「有修饰键」或「会改状态的单键」，纯字母输入太吵
+  if (mods || ['Escape', 'Enter', 'Delete', 'Backspace'].includes(k)
+      || Object.prototype.hasOwnProperty.call(TOOL_KEYS, k.toLowerCase())) {
+    op('按键', mods + k);
+  }
+}, true);
+
+/* 滚轮缩放节流记：手一滑能出几十条 */
+let wheelOpAt = 0;
+window.addEventListener('wheel', e => {
+  const now = performance.now();
+  if (now - wheelOpAt < 400) return;
+  wheelOpAt = now;
+  op('滚轮', (e.ctrlKey || e.metaKey) ? '缩放' : '平移');
+}, { capture: true, passive: true });
 window.addEventListener('error', e => {
   mainConsole.push('error', [`${e.message}  @${e.filename}:${e.lineno}`]);
 });
@@ -2119,7 +2173,7 @@ function markDirty(v) {
 function newDocument(w, h, opts = {}) {
   if (floating) { floating = null; syncFloatBar(); }
   doc = new Doc(w, h, { background: opts.background });
-  op('新建文档', w + '×' + h + (opts.background === 'transparent' ? ' 透明' : ''));
+  op('文档', '新建', w + '×' + h + (opts.background === 'transparent' ? ' 透明' : ''));
 
   hk.doc = doc;
   hk.canvas = null;
