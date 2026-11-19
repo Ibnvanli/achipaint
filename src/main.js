@@ -62,6 +62,9 @@ view.style.touchAction = 'none';   // 防止触屏/笔被当作滚动手势
 /* 上限 2 在 Retina 上意味着视口画布有 2200×1650 物理像素，
  * 每帧要把这一整块作为图层内容交给系统合成 —— WKWebView 在这上面明显吃亏
  * （实测帧率 37fps，Chromium 同尺寸能到 60）。降到 1.5 换帧率，肉眼几乎无差。 */
+/* 上限 2 在 Retina 上意味着视口画布 2200×1650 物理像素，
+ * 每帧要把整块作为图层内容交给系统合成 —— 实测帧间隔 21.4ms（47fps），
+ * 掉到 60fps 以下就会「不跟手」。降到 1.5 换帧率，肉眼几乎无差。 */
 let dpr = Math.min(window.devicePixelRatio || 1, 1.5);
 
 function resize() {
@@ -122,6 +125,10 @@ function paint() {
   needFrame = false;
   framePending = false;
   perfMark._t0 = performance.now();
+
+  /* 把攒了一帧的笔迹先搬进覆盖层，再合成。
+   * 顺序不能反：flushDirty 需要读 overlay。 */
+  if (hk.active) hk.flush();
 
   // 先把脏块合进离屏缓冲（只处理变过的块）
   doc.collectDirty();
@@ -347,7 +354,9 @@ view.addEventListener('pointermove', e => {
       const q = toDoc(ev);
       hk.move(q.x, q.y, pressureOf(ev), tiltOpts(ev, q));
     }
-    hk.flush();   // 一批合并事件只搬一次块
+    /* 这里**不** flush。
+     * pump() 一次要搬几十个 64×64 块（实测 p90 8.5ms），而压感笔约 4ms 一个事件 ——
+     * 在事件里搬就会越搬越积。改成把落块推迟到 paint 前，一帧只搬一次。 */
     requestPaint();
     return;
   }
