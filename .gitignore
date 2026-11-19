@@ -13,3 +13,7 @@ node_modules/
 
 # 保存的测试文件
 *.achi
+
+# Python 字节码缓存
+__pycache__/
+*.pyc

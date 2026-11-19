@@ -887,6 +887,10 @@ function rotateLayer(node, deg) {
   tctx.translate(-cx, -cy);
   tctx.drawImage(flat, 0, 0);
 
+  // flat 已经用完了，立刻放手：大画布上它值 35MB
+  flat.width = 0;
+  flat.height = 0;
+
   // 写回瓦片
   const old = [...tc.tiles.values()].map(t => ({ col: t.col, row: t.row, canvas: t.canvas }));
   tc.tiles.clear();
@@ -947,6 +951,8 @@ $('btn-fit').onclick = fit;
 const TOOL_KEYS = { b: 'brush', e: 'eraser', i: 'pick', v: 'move', m: 'select', h: 'hand', z: 'zoom' };
 
 function setTool(next) {
+  // 浮着一块时切工具，先把它落回图层，否则它会一直挂在那儿
+  if (floating && next !== 'select') commitFloating();
   if (tool !== next) op('切换工具', next);
   tool = next;
   document.querySelectorAll('[data-tool]').forEach(b => {
@@ -1827,6 +1833,8 @@ async function openImageAsDocument(bytes, name) {
  *                 否则沿用默认 view 就从左上角按 100% 摊开，一眼看不全。
  */
 function installDocument(loaded, name, path, opts = {}) {
+  // 浮动块挂在旧图层上，换文档前必须丢掉，否则会往已废弃的瓦片上写
+  if (floating) { floating = null; syncFloatBar(); }
   doc = loaded;
   hk.doc = doc;
   hk.canvas = null;
@@ -2101,6 +2109,7 @@ function markDirty(v) {
  * 否则上一张画的内容还留在里面。
  */
 function newDocument(w, h, opts = {}) {
+  if (floating) { floating = null; syncFloatBar(); }
   doc = new Doc(w, h, { background: opts.background });
   op('新建文档', w + '×' + h + (opts.background === 'transparent' ? ' 透明' : ''));
 
