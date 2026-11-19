@@ -1145,6 +1145,13 @@ function toast(msg, kind) {
   toast._t = setTimeout(() => el.classList.remove('show'), kind === 'error' ? 7000 : 3200);
 }
 
+/* 忙碌态：变暗 + 转圈光标，图标原样留着 */
+function setBusy(btn, on) {
+  if (!btn) return;
+  btn.classList.toggle('busy', on);
+  btn.disabled = on;
+}
+
 function showFileError(title, err) {
   const detail = err instanceof AchiFileError
     ? `[${err.code}] ${err.message}`
@@ -1161,9 +1168,9 @@ function setDocName(name) {
 
 async function doSave(forceDialog = false) {
   const btn = $('btn-save');
-  const old = btn.textContent;
-  btn.textContent = '保存中…';
-  btn.disabled = true;
+  /* 只改状态，绝不动内容：这几个按钮里是 <svg>，没有 textContent，
+   * 一旦 textContent = '保存中…' 就把图标整个删了，finally 也恢复不回来。 */
+  setBusy(btn, true);
   try {
     const blob = await serialize(doc, {
       app: '0.1.0',
@@ -1179,14 +1186,17 @@ async function doSave(forceDialog = false) {
       if (!r.download) setDocName(r.name.replace(/\.achi$/i, ''));
       markDirty(false);
       pushRecent({ name: r.name, path: r.path || null, w: doc.w, h: doc.h });
+      // 明确告诉用户存哪了 —— 没有反馈的话「存了没」根本看不出来
+      toast(r.path
+        ? `已保存：${r.path}`
+        : r.download ? `已下载：${r.name}` : `已保存：${r.name}`);
     }
     return r.saved;
   } catch (e) {
     showFileError('保存失败', e);
     return false;
   } finally {
-    btn.textContent = old;
-    btn.disabled = false;
+    setBusy(btn, false);
   }
 }
 
@@ -1219,9 +1229,7 @@ function installDocument(loaded, name, path) {
 
 async function doOpen(fromPath) {
   const btn = $('btn-open');
-  const old = btn.textContent;
-  btn.textContent = '打开中…';
-  btn.disabled = true;
+  setBusy(btn, true);
   try {
     const picked = fromPath
       ? await openByPath(fromPath)
@@ -1230,14 +1238,14 @@ async function doOpen(fromPath) {
 
     const { doc: loaded, warnings } = await parse(picked.buffer);
     installDocument(loaded, picked.name, picked.path);
+    toast(`已打开：${picked.name}`);
     if (warnings && warnings.length) console.warn('[打开] 有告警：', warnings);
     return true;
   } catch (e) {
     showFileError('打开失败', e);
     return false;
   } finally {
-    btn.textContent = old;
-    btn.disabled = false;
+    setBusy(btn, false);
   }
 }
 

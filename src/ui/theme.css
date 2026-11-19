@@ -194,6 +194,14 @@ html.electron .tb-menus { display: none; }
 .icon-btn:active { background: var(--bg-2); }
 .icon-btn:disabled { opacity: .35; cursor: default; background: transparent; }
 
+/* 忙碌态：变暗 + 转圈光标，图标原样留着，别拿文字换掉它 */
+.icon-btn.busy { opacity: .45; cursor: progress; }
+.icon-btn.busy svg { animation: btn-pulse 1.1s ease-in-out infinite; }
+@keyframes btn-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .45; }
+}
+
 /* Electron：标题栏左让出 78px 给 macOS 红绿灯，整条可拖动，按钮除外 */
 html.electron .titlebar {
   padding-left: 84px;
