@@ -6,7 +6,7 @@
  */
 
 const RECENT_KEY = 'achi.recent';
-const RECENT_MAX = 6;
+const RECENT_MAX = 20;
 
 export const PRESETS = [
   { name: 'A4 · 300dpi', w: 2480, h: 3508, note: '印刷尺寸' },
