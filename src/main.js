@@ -1506,11 +1506,16 @@ async function openImageAsDocument(bytes, name) {
   bg.canvas.markDirty(0, 0, bmp.width, bmp.height);
   bmp.close?.();
 
-  installDocument(imgDoc, name.replace(/\.[^.]+$/, ''), null);
+  installDocument(imgDoc, name.replace(/\.[^.]+$/, ''), null, { fitView: true });
   toast(`已导入图片：${name}（${imgDoc.w} × ${imgDoc.h}）`);
 }
 
-function installDocument(loaded, name, path) {
+/**
+ * @param {object} opts
+ *   opts.fitView  没有自带视图的文档（图片导入的）要适应窗口，
+ *                 否则沿用默认 view 就从左上角按 100% 摊开，一眼看不全。
+ */
+function installDocument(loaded, name, path, opts = {}) {
   doc = loaded;
   hk.doc = doc;
   hk.canvas = null;
@@ -1536,8 +1541,10 @@ function installDocument(loaded, name, path) {
 
   /* 必须 redraw() 而不是 requestPaint()：新文档的 dirtyTiles 是空的，
    * flushDirty 什么都不做，doc.off 里还留着上一张画的画面 ——
-   * 表现就是「打开之后一片空白，动一下才出来」。 */
-  redraw();
+   * 表现就是「打开之后一片空白，动一下才出来」。
+   * fit() 内部就会 redraw，所以走 fit 时不用再调一次。 */
+  if (opts.fitView) fit();
+  else redraw();
 }
 
 /* 统一的「从字节打开」：文件对话框、最近列表、拖拽，全走这一条。
