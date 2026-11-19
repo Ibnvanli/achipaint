@@ -48,46 +48,55 @@
 
 ---
 
-## 做成 macOS 应用
+## 两种跑法
 
-```sh
-npm run app            # 或 bash native/build.sh
-open ~/Applications/AchiPaint.app
-```
-
-`.app` 约 **680KB**，常驻内存约 **90MB**。装好之后双击就能画，不依赖终端、不依赖服务。
-
-外壳是 `native/AchiPaint.swift`（Swift + WKWebView），不是 Electron。原因见下面「为什么不是 Electron」。
-
-### 开发模式
+### 网页版（开发用）
 
 ```sh
 python3 serve.py
 # 浏览器打开 http://127.0.0.1:8899/src/index.html
 ```
 
-`src/` 里的页面两种方式共用，改完刷新就见效。
+改完刷新就见效，`src/` 直接就是源码。
 
-不能直接双击 `index.html`：项目用原生 ES module 加载，还用 `fetch` 取 `.myb` 笔刷和 wasm，
-`file://` 协议下会被浏览器拦掉。
+### Electron 版（日常用）
 
-### 为什么不是 Electron
+```sh
+npm run app            # 或 bash native/build-electron.sh
+open ~/Applications/AchiPaint.app
+```
 
-macOS 27 拒绝 ad-hoc 签名进程调用 `task_name_for_pid`，而 Electron 启动时会做这项检查 ——
-**连 Electron 官方原版 .app 都打不开**，报 `codesign_util.cc:79 task_name_for_pid`。
-要么买开发者证书（$99/年）做正式签名，要么换原生壳。
+约 **253MB**，常驻内存约 90MB。双击就能画，不依赖终端、不依赖本地服务。
 
-换 WKWebView 之后实测：
+**主路径是这条。** 网页端和 Electron 端共用同一份 `src/`，改一处两边都生效。
 
-| 项目 | 结果 |
-| --- | --- |
-| `desynchronized` canvas | ✅ 支持（低延迟的关键） |
-| `getCoalescedEvents()` | ✅ 支持 |
-| `requestAnimationFrame` | 稳定 17ms / 60fps 满帧 |
-| 体积 | 680KB（Electron 约 252MB） |
-| 常驻内存 | 91MB（Electron 约 200MB+） |
+### 为什么是这两条、不是 WKWebView
 
-之前担心的「WKWebView 不支持 `desynchronized`」不成立，所以这条路没有牺牲手感。
+试过用 Swift + WKWebView 做原生壳，能跑（680KB / 37fps），但搁置了：
+macOS 27 之后 WebKit 的方向不明，而 Electron 至少把内核攥在自己手里。
+代码留在 [native/experimental-webkit](native/experimental-webkit/)，需要时还能捡起来。
+
+### Electron 在 macOS 27 上的坑
+
+直接把 Electron.app 拖进 `~/Applications` 双击是**打不开**的：
+
+```
+ERROR:electron/shell/common/mac/codesign_util.cc:79] task_name_for_pid: (os/kern) failure (5)
+```
+
+原因是 macOS 会拒绝 LaunchServices 启动的、没有 Apple 签发 Team ID 的进程
+调用 `task_name_for_pid`，而 Electron 启动时要做这项检查。
+自签名证书也没用 —— Team ID 由 Apple 签发证书时写入，自己造不出来。
+
+**绕法**：套一个极简 Swift launcher。
+
+```
+AchiPaint.app             ← LaunchServices 启动这一层（Swift，104KB）
+  └─ spawn ────────────→ Electron.app/Contents/MacOS/AchiPaint   ← 真正干活的
+```
+
+另外两个坑：LaunchServices 不接受从 `/tmp` 启动的 app（`lsregister` 报 `-10811`），
+以及极简 bundle 缺 `NSPrincipalClass` 也会被拒。构建脚本里都处理了。
 
 ### 快捷键
 
@@ -119,10 +128,10 @@ src/
   brushes/         .myb 笔刷预设
   plugins/         边缘插件（目前只有 PNG 导出）
   main.js  index.html
-native/          macOS 原生壳
-  AchiPaint.swift   Swift + WKWebView，约 200 行
-  build.sh          编译并组装 .app
-  Info.plist
+native/
+  electron/           Electron 主进程（自定义 achi:// 协议提供静态资源）
+  build-electron.sh   打包 Electron 版并套上 launcher
+  experimental-webkit/ WKWebView 壳，实验，暂不维护
 build/           应用图标与签名用的 entitlements
 ```
 

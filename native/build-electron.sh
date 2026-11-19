@@ -18,6 +18,7 @@ OUT="$ROOT/dist/electron"
 SIG="AchiPaint Self Signed"
 
 echo "1/6 准备打包源"
+rm -rf "$OUT"
 rm -rf /tmp/achi-electron-src && mkdir -p /tmp/achi-electron-src
 cp native/electron/main.js /tmp/achi-electron-src/electron-main.js
 cp build/icon.icns /tmp/achi-electron-src/icon.icns
@@ -81,6 +82,7 @@ app.delegate = d
 app.run()
 SWIFT
 swiftc -O /tmp/achi-launcher.swift -o "$OUT/launcher/Contents/MacOS/Launcher" -framework Cocoa
+rm -rf "$OUT/launcher/Contents/Resources/AchiPaint.app"
 cp -R "$OUT/AchiPaint-darwin-arm64/AchiPaint.app" "$OUT/launcher/Contents/Resources/AchiPaint.app"
 
 echo "4/6 写 Info.plist"
