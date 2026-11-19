@@ -1470,47 +1470,72 @@ function paintChecker(ctx, size, step = 4) {
 /* ---------- 图层缩略图 ----------
  * 缩略图要重画整层的瓦片，所以按「内容有没有变过」缓存，不能每次渲染都算。
  */
-function layerThumb(node, size = 32) {
-  if (node.isGroup) return null;
-  const tc = node.canvas;
-  if (!tc || tc.tiles.size === 0) return null;
+/* 直接画进 canvas 元素，不走 toDataURL ——
+ * 每笔落完都要刷新，而 PNG 编码一次 10~30ms，画的时候能感觉到顿一下。 */
+function paintThumb(el, node, size = 32) {
+  const ctx = el.getContext('2d');
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, size, size);
 
-  const stamp = tc.tiles.size + ':' + history.stack.length + ':' + (tc._dirtyStamp || 0);
-  if (node._thumbKey === stamp && node._thumbURL) return node._thumbURL;
+  if (!node || node.isGroup || !node.canvas || node.canvas.tiles.size === 0) {
+    paintChecker(ctx, size);
+    el.dataset.empty = '1';
+    return;
+  }
+  delete el.dataset.empty;
 
-  const cv = newCanvas(size, size);
-  const ctx = cv.getContext('2d');
-  /* 先铺棋盘格底：透明区域一眼能看出来，浅色内容在白底上也不会消失 */
   paintChecker(ctx, size);
   const s2 = Math.min(size / doc.w, size / doc.h);
   ctx.imageSmoothingEnabled = true;
-  for (const t of tc.tiles.values()) {
+  for (const t of node.canvas.tiles.values()) {
     ctx.drawImage(t.canvas, 0, 0, 256, 256,
       Math.floor(t.col * 256 * s2), Math.floor(t.row * 256 * s2),
       Math.ceil(256 * s2), Math.ceil(256 * s2));
   }
-  node._thumbKey = stamp;
-  node._thumbURL = cv.toDataURL();
-  return node._thumbURL;
+}
+
+function paintMaskThumb(el, node, size = 32) {
+  const ctx = el.getContext('2d');
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, size, size);            // 蒙版看不见 = 黑底
+  const m = node.mask;
+  if (!m || m.tiles.size === 0) return;
+  const s2 = Math.min(size / doc.w, size / doc.h);
+  for (const t of m.tiles.values()) {
+    ctx.drawImage(t.canvas, 0, 0, 256, 256,
+      Math.floor(t.col * 256 * s2), Math.floor(t.row * 256 * s2),
+      Math.ceil(256 * s2), Math.ceil(256 * s2));
+  }
 }
 
 /* 笔一落完就刷新缩略图，但别重建整个图层面板（会闪、也会丢掉正在进行的交互） */
-function refreshThumbs() {
+let thumbAt = 0;
+let thumbTimer = 0;
+
+function refreshThumbs(force) {
+  const now = performance.now();
+  // 节流：连续快画时别每一笔都重画缩略图
+  if (!force && now - thumbAt < 250) {
+    clearTimeout(thumbTimer);
+    thumbTimer = setTimeout(() => refreshThumbs(true), 260);
+    return;
+  }
+  thumbAt = now;
+
   const box = $('layers');
   if (!box) return;
   for (const row of box.querySelectorAll('.lay-row[data-uid]')) {
     const node = nodeById.get(row.dataset.uid);
     if (!node || node.isGroup) continue;
-    const t = row.querySelector('.lay-thumb');
-    if (!t) continue;
-    const url = layerThumb(node);
-    if (url) {
-      t.style.backgroundImage = `url(${url})`;
-      t.classList.remove('empty');
-    } else {
-      t.style.backgroundImage = '';
-      t.classList.add('empty');
-    }
+    const t = row.querySelector('canvas.lay-thumb');
+    if (t) paintThumb(t, node);
+  }
+  for (const row of box.querySelectorAll('.mask-row')) {
+    const t = row.querySelector('canvas.lay-thumb');
+    const uid = row.dataset.maskFor;
+    const node = uid ? nodeById.get(uid) : null;
+    if (t && node) paintMaskThumb(t, node);
   }
 }
 
@@ -1574,11 +1599,10 @@ function layerRow(node, depth) {
     redraw();
   };
 
-  const thumb = document.createElement('span');
+  const thumb = document.createElement('canvas');
   thumb.className = 'lay-thumb';
-  const url = layerThumb(node);
-  if (url) thumb.style.backgroundImage = `url(${url})`;
-  else thumb.classList.add('empty');
+  thumb.width = thumb.height = 32;
+  paintThumb(thumb, node);
 
   const name = document.createElement('span');
   name.className = 'lay-name';
@@ -1694,6 +1718,7 @@ function renderLayers() {
 function maskRow(node, depth) {
   const row = document.createElement('div');
   row.className = 'lay-row mask-row' + (doc.maskMode && doc.activeLeaf === node ? ' on' : '');
+  row.dataset.maskFor = uidOf(node);
   row.style.paddingLeft = (4 + depth * 14) + 'px';
 
   const exp = document.createElement('span');
@@ -1704,10 +1729,10 @@ function maskRow(node, depth) {
   icon.textContent = '◐';
   icon.title = '蒙版';
 
-  const thumb = document.createElement('span');
+  const thumb = document.createElement('canvas');
   thumb.className = 'lay-thumb mask';
-  const mu = maskThumb(node);
-  if (mu) thumb.style.backgroundImage = `url(${mu})`;
+  thumb.width = thumb.height = 32;
+  paintMaskThumb(thumb, node);
 
   const name = document.createElement('span');
   name.className = 'lay-name';
@@ -2286,7 +2311,8 @@ const mainConsole = {
       try { return JSON.stringify(a); } catch { return String(a); }
     }).join(' ');
     this.logs.push({ level, text, t: Date.now() });
-    if (this.logs.length > 2000) this.logs.shift();
+    // shift 每次都要搬 2000 个元素；攒到上限再一次性裁掉一批
+    if (this.logs.length > 2200) this.logs = this.logs.slice(-2000);
   },
   clear() { this.logs = []; },
 };

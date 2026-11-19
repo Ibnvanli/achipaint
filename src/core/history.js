@@ -100,15 +100,24 @@ export class History {
    * 关键：index 不能变成负数 —— 那会让 undo() 直接返回 false，
    * 用户看到的就是「撤到一定量突然撤不动」。
    */
+  /* 淘汰最老的记录，直到总字节数回到上限内。
+   *
+   * 注意不能一边 shift 一边循环 —— Array.shift() 每次都要搬整个数组，
+   * 栈里几十条时就是 O(n²)。改成先数出要丢几条，最后一次 slice 切掉。 */
   trim() {
     if (this.bytes <= this.limit) return;
-    while (this.bytes > this.limit && this.stack.length > 1) {
-      const drop = this.stack.shift();
-      this.bytes -= drop.bytes;
-      if (this.index > 0) this.index--;
-      else this.index = 0;
-      if (this.index >= this.stack.length) this.index = this.stack.length - 1;
+
+    let drop = 0;
+    while (this.bytes > this.limit && this.stack.length - drop > 1) {
+      this.bytes -= this.stack[drop].bytes;
+      drop++;
     }
+    if (drop === 0) return;
+
+    this.stack = this.stack.slice(drop);
+    // index 要跟着挪，但不能变成负数
+    this.index = Math.max(0, this.index - drop);
+    if (this.index >= this.stack.length) this.index = this.stack.length - 1;
   }
 
   undo(tileCanvas) {

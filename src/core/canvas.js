@@ -366,8 +366,7 @@ export class Doc {
    */
   _drawOffsetTile(n, ctx, dx, dy, ox = 0, oy = 0) {
     const T = TILE;
-    const [cc, cr] = this._key.split(',').map(Number);
-    const bx = cc * T, by = cr * T;          // 当前块的世界坐标
+    const bx = (this._keyC || 0) * T, by = (this._keyR || 0) * T;   // 当前块的世界坐标
 
     const c0 = Math.floor((bx - dx) / T) - 1;
     const c1 = Math.floor((bx - dx + T) / T) + 1;
@@ -388,8 +387,10 @@ export class Doc {
     /* 隔离分支用的是 256×256 的 scratch，而瓦片坐标是世界坐标。
      * 不换算到「当前块」原点的话，非 (0,0) 的块会被画到 scratch 外面 ——
      * 表现就是「蒙版 / 组不透明度只有左上角那 256px 是对的」。 */
-    const [bc, br] = this._key ? this._key.split(',').map(Number) : [0, 0];
-    const bx = bc * TILE, by = br * TILE;
+    /* 坐标由 flushDirty 直接喂进来 —— 每个脏块每帧 split 一次太浪费，
+     * A4 全量重绘时 140 块就是 140 次字符串切分 + 数组分配。 */
+    const bx = (this._keyC || 0) * TILE;
+    const by = (this._keyR || 0) * TILE;
 
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
@@ -492,6 +493,8 @@ export class Doc {
       ctx.globalCompositeOperation = 'source-over';
 
       this._key = key;
+      this._keyC = c;
+      this._keyR = r;
       this._drawStack(this.root.children, ctx, 0, 0, 0, scratchFor);
       this._key = null;
 
