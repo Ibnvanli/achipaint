@@ -1201,6 +1201,41 @@ async function doSave(forceDialog = false) {
 }
 
 /* 把一份解析好的文档装上。调用方保证 parse 已经成功。 */
+/* 判断是不是 .achi：只看前 4 个字节的 magic，别猜扩展名 */
+function isAchiFile(bytes) {
+  return bytes.length >= 4
+    && bytes[0] === 0x41 && bytes[1] === 0x43 && bytes[2] === 0x48 && bytes[3] === 0x49;
+}
+
+/* 把一张普通图片变成新文档：尺寸跟图走，图铺在背景层上。
+ * 这是描图/参考最常见的入口 —— 打开一张图就能在上面接着画。 */
+async function openImageAsDocument(bytes, name) {
+  let bmp;
+  try {
+    bmp = await createImageBitmap(new Blob([bytes]));
+  } catch {
+    throw new AchiFileError('这个文件既不是 .achi 也不是能识别的图片', 'BAD_FILE');
+  }
+
+  if (bmp.width < 1 || bmp.height < 1 || bmp.width > 12000 || bmp.height > 12000) {
+    bmp.close?.();
+    throw new AchiFileError(`图片尺寸不合理：${bmp.width}×${bmp.height}`, 'BAD_IMAGE');
+  }
+
+  const imgDoc = new Doc(bmp.width, bmp.height, { background: 'white' });
+  const bg = imgDoc.root.children[0];
+  bg.name = name.replace(/\.[^.]+$/, '');   // 图层名跟着文件名走，比都叫「背景」有用
+  // ctx 已经平移到整图坐标，直接整张画，浏览器会按块裁
+  bg.canvas.forEachTileInBounds(0, 0, bmp.width, bmp.height, ctx => {
+    ctx.drawImage(bmp, 0, 0);
+  });
+  bg.canvas.markDirty(0, 0, bmp.width, bmp.height);
+  bmp.close?.();
+
+  installDocument(imgDoc, name.replace(/\.[^.]+$/, ''), null);
+  toast(`已导入图片：${name}（${imgDoc.w} × ${imgDoc.h}）`);
+}
+
 function installDocument(loaded, name, path) {
   doc = loaded;
   hk.doc = doc;
@@ -1235,6 +1270,14 @@ async function doOpen(fromPath) {
       ? await openByPath(fromPath)
       : await openFile();
     if (!picked) return false;
+
+    const bytes = new Uint8Array(picked.buffer);
+
+    // 图片走另一条路：新建一个同尺寸文档，图铺在底层
+    if (bytes.length < 4 || !isAchiFile(bytes)) {
+      await openImageAsDocument(bytes, picked.name);
+      return true;
+    }
 
     const { doc: loaded, warnings } = await parse(picked.buffer);
     installDocument(loaded, picked.name, picked.path);

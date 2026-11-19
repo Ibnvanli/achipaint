@@ -34,7 +34,7 @@ function pickWithInput() {
   return new Promise(resolve => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = EXT + ',application/x-achipaint';
+    input.accept = [EXT, '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].join(',');
     input.onchange = async () => {
       const f = input.files && input.files[0];
       if (!f) return resolve(null);
@@ -127,7 +127,10 @@ export async function openFile() {
   if (window.showOpenFilePicker) {
     try {
       const [handle] = await window.showOpenFilePicker({
-        types: [{ description: 'AchiPaint 画布', accept: { 'application/x-achipaint': [EXT] } }],
+        types: [
+          { description: 'AchiPaint 画布', accept: { 'application/x-achipaint': [EXT] } },
+          { description: '图片', accept: { 'image/*': ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'] } },
+        ],
         multiple: false,
       });
       const file = await handle.getFile();

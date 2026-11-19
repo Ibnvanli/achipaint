@@ -58,7 +58,11 @@ ipcMain.handle('achi:open', async (event) => {
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     title: '打开画布',
     properties: ['openFile'],
-    filters: [{ name: 'AchiPaint 画布', extensions: ['achi'] }],
+    filters: [
+      { name: 'AchiPaint 画布', extensions: ['achi'] },
+      { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] },
+      { name: '全部文件', extensions: ['*'] },
+    ],
   });
   if (canceled || !filePaths.length) return null;
   const buf = await fs.readFile(filePaths[0]);
