@@ -36,13 +36,17 @@ cat > /tmp/achi-electron-src/package.json <<'JSON'
 }
 JSON
 
+# 版本号只认 package.json，别在两处各写一个（之前 About 面板显示 0.1.0 就是这么来的）
+APP_VERSION=$(node -p "require('$ROOT/package.json').version" 2>/dev/null || echo "0.0.0")
+echo "   版本：$APP_VERSION"
+
 echo "2/6 打包 Electron"
 cd /tmp/achi-electron-src
 ELECTRON_MIRROR="${ELECTRON_MIRROR:-https://npmmirror.com/mirrors/electron/}" \
   npx --yes @electron/packager . AchiPaint \
   --platform=darwin --arch=arm64 --electron-version=45.4.1 \
   --out="$OUT" --overwrite \
-  --app-bundle-id=org.achipaint.app --app-version=0.1.0 \
+  --app-bundle-id=org.achipaint.app --app-version="$APP_VERSION" \
   --icon=icon.icns >/dev/null 2>&1
 
 cd "$ROOT"

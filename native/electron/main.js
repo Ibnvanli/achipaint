@@ -192,6 +192,22 @@ function buildMenuTemplate() {
   ];
 }
 
+/* 「关于」面板。macOS 原生的那一套只显示名称/版本/版权，
+ * credits 这块可以写清楚用了什么、什么协议 —— 开源项目该写明的东西。 */
+app.setAboutPanelOptions({
+  applicationName: 'AchiPaint',
+  applicationVersion: app.getVersion(),
+  version: app.getVersion(),
+  copyright: 'Copyright © 2026 Moalcaswes · MIT License',
+  credits:
+    '轻核心 · 边缘插件\n\n'
+    + '笔刷引擎  hokusai（libmypaint 的 Rust 移植）— MIT / Apache-2.0\n'
+    + '            libmypaint 笔刷数学 — Apache-2.0\n'
+    + '运行时      Electron / Chromium — MIT\n'
+    + '外壳        Swift + WebKit（launcher）— 本项目的 MIT 部分\n\n'
+    + '本项目源码以 MIT 协议发布；第三方组件的许可见 NOTICE 与 third-party/ 目录。',
+});
+
 app.whenReady().then(() => {
   protocol.handle(SCHEME, async (req) => {
     try {
