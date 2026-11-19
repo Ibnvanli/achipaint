@@ -9,9 +9,9 @@ import { Bus, PluginHost } from './core/bus.js';
 import { DEFAULT_SWATCHES } from './core/color.js';
 import { Slider } from './ui/widgets.js';
 import { ColorPicker } from './ui/colorpicker.js';
-import { Splash, pushRecent } from './ui/splash.js';
+import { Splash, pushRecent, removeRecent } from './ui/splash.js';
 import { serialize, parse, AchiFileError } from './core/format.js';
-import { saveFile, openFile, openByPath, canOpenByPath } from './platform/fileio.js';
+import { saveFile, openFile, openByPath, canOpenByPath, deleteFile } from './platform/fileio.js';
 import pngExporter from './plugins/export-png.js';
 
 const $ = id => document.getElementById(id);
@@ -82,6 +82,22 @@ let needFrame = false;
 let framePending = false;
 let frameQueuedAt = 0;
 
+/* 透明背景的棋盘格。按 8px 一格画一张小图再平铺，比每帧画几千个矩形便宜。 */
+let _checker = null;
+function checkerPattern(ctx) {
+  if (_checker) return _checker;
+  const c = document.createElement('canvas');
+  c.width = c.height = 16;
+  const g = c.getContext('2d');
+  g.fillStyle = '#ffffff';
+  g.fillRect(0, 0, 16, 16);
+  g.fillStyle = '#e4e4e4';
+  g.fillRect(0, 0, 8, 8);
+  g.fillRect(8, 8, 8, 8);
+  _checker = ctx.createPattern(c, 'repeat');
+  return _checker;
+}
+
 /* 性能探针：记录每帧合成耗时，以及「最近一次指针事件 → 这一帧画完」的间隔。
  * 只在 window.__achiPerf 存在时记录，默认不占开销。 */
 const perfSamples = [];
@@ -140,8 +156,13 @@ function paint() {
     vctx.translate(x, y);
     vctx.scale(zoom, zoom);
 
-    // 纸底只画可见那块
-    vctx.fillStyle = '#ffffff';
+    // 纸底只画可见那块。透明背景铺棋盘格，否则铺白。
+    if (doc.background === 'transparent') {
+      const pat = checkerPattern(vctx);
+      vctx.fillStyle = pat || '#ffffff';
+    } else {
+      vctx.fillStyle = '#ffffff';
+    }
     vctx.fillRect(sx, sy, ex - sx, ey - sy);
 
     vctx.imageSmoothingEnabled = zoom < 1;
@@ -1219,8 +1240,8 @@ $('btn-open').onclick = () => doOpen();
  * hk 的 surface 尺寸变了会在 ensureSurface 里自己重建；同尺寸时要手动丢弃，
  * 否则上一张画的内容还留在里面。
  */
-function newDocument(w, h) {
-  doc = new Doc(w, h);
+function newDocument(w, h, opts = {}) {
+  doc = new Doc(w, h, { background: opts.background });
 
   hk.doc = doc;
   hk.canvas = null;
@@ -1234,7 +1255,7 @@ function newDocument(w, h) {
   pending = null;
   gesture = null;
 
-  setDocName('未命名');
+  setDocName(opts.name || '未命名');
   $('st-size').textContent = doc.w + ' × ' + doc.h;
   fit();
   renderLayers();
@@ -1257,7 +1278,20 @@ if (!HAS_SIZE) {
   const splash = new Splash({
     defaultSize: { w: DW, h: DH },
     canOpenRecent: canOpenByPath(),
-    onPick: (w, h) => newDocument(w, h),
+    onPick: (w, h, extra) => newDocument(w, h, extra || {}),
+    onRemoveRecent: async (entry, alsoDeleteFile) => {
+      if (alsoDeleteFile && entry.path) {
+        try {
+          await deleteFile(entry.path);
+        } catch (e) {
+          toast('删除文件失败：' + (e && e.message || e), 'error');
+          // 文件删不掉就别把记录也抹了，否则用户找不到它
+          return;
+        }
+      }
+      removeRecent(entry);
+      splash.refreshRecent();
+    },
     /* 打开成功才收起浮层：失败的话（坏文件）还留在原地，用户能继续选别的 */
     onOpen: async () => { if (await doOpen()) splash.hide(); },
     onOpenRecent: async (entry) => { if (await doOpen(entry.path)) splash.hide(); },

@@ -157,8 +157,16 @@ export function isAncestor(a, node) {
 
 /* ---------- 文档：图层树 + 视口 + 离屏合成缓存 ---------- */
 export class Doc {
-  constructor(w, h) {
+  /**
+   * @param {number} w
+   * @param {number} h
+   * @param {{background?: 'white'|'transparent'}} opts
+   *   background 只影响「纸」怎么显示，不往图层里写像素 ——
+   *   所以切背景不会污染画稿，导出时也按它决定要不要垫白。
+   */
+  constructor(w, h, opts = {}) {
     this.w = w; this.h = h;
+    this.background = opts.background === 'transparent' ? 'transparent' : 'white';
 
     this.root = new LayerGroup('root');
     const bg = new Layer(w, h, '背景');

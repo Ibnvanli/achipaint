@@ -59,30 +59,35 @@ function timeAgo(ts) {
 export class Splash {
   /**
    * @param {object} opts
-   * @param {(w:number,h:number)=>void} opts.onPick
-   * @param {()=>void} opts.onOpen          点「打开文件…」
-   * @param {(entry:object)=>void} opts.onOpenRecent  点最近记录
+   * @param {(w:number,h:number,extra:object)=>void} opts.onPick
+   * @param {()=>void} opts.onOpen
+   * @param {(entry:object)=>void} opts.onOpenRecent
+   * @param {(entry:object)=>void} opts.onRemoveRecent
    * @param {{w:number,h:number}} opts.defaultSize
-   * @param {boolean} opts.canOpenRecent    这个环境能不能按路径重开
+   * @param {boolean} opts.canOpenRecent
    */
   constructor(opts) {
     this.el = document.getElementById('splash');
+    this.viewList = document.getElementById('splash-view-list');
+    this.viewDetail = document.getElementById('splash-view-detail');
     this.grid = document.getElementById('splash-presets');
     this.recentEl = document.getElementById('splash-recent');
-    this.hint = document.getElementById('splash-hint');
     this.note = document.getElementById('splash-note');
-    this.inputW = document.getElementById('splash-w');
-    this.inputH = document.getElementById('splash-h');
+
     this.onPick = opts.onPick;
     this.onOpen = opts.onOpen || (() => {});
     this.onOpenRecent = opts.onOpenRecent || (() => {});
+    this.onRemoveRecent = opts.onRemoveRecent || (() => {});
     this.defaultSize = opts.defaultSize;
     this.canOpenRecent = !!opts.canOpenRecent;
 
     this.buildPresets();
-    this.bind();
+    this.bindList();
+    this.bindDetail();
     this.refreshRecent();
   }
+
+  /* ---------- 一屏 ---------- */
 
   buildPresets() {
     this.grid.innerHTML = '';
@@ -94,13 +99,138 @@ export class Splash {
         <span class="n">${p.name}</span>
         <span class="d">${p.w} × ${p.h}</span>
         <span class="m">${p.note} · 约 ${mem} MB</span>`;
-      b.onclick = () => this.pick(p.w, p.h);
+      b.onclick = () => this.showDetail(p);
       this.grid.appendChild(b);
     }
-    this.inputW.value = this.defaultSize.w;
-    this.inputH.value = this.defaultSize.h;
-    this.updateHint();
   }
+
+  bindList() {
+    document.getElementById('splash-custom').onclick = () => this.showDetail(null);
+    document.getElementById('splash-open').onclick = () => this.onOpen();
+
+    this._key = e => {
+      if (e.key !== 'Escape' || this.hidden) return;
+      e.preventDefault();
+      if (!this.viewDetail.hidden) this.backToList();
+      else this.dismiss();
+    };
+    window.addEventListener('keydown', this._key);
+
+    this.el.addEventListener('pointerdown', e => {
+      if (e.target === this.el) this.dismiss();
+    });
+  }
+
+  /* ---------- 二屏：详细设置 ---------- */
+
+  bindDetail() {
+    this.dName = document.getElementById('dt-name');
+    this.dW = document.getElementById('dt-w');
+    this.dH = document.getElementById('dt-h');
+    this.dDpi = document.getElementById('dt-dpi');
+    this.dBg = document.getElementById('dt-bg');
+    this.dInfo = document.getElementById('dt-info');
+    this.dPhysical = document.getElementById('dt-physical');
+    this.dPortrait = document.getElementById('dt-portrait');
+    this.dLandscape = document.getElementById('dt-landscape');
+
+    for (const el of [this.dW, this.dH, this.dDpi]) {
+      el.addEventListener('input', () => this.refreshDetail());
+    }
+
+    this.dPortrait.onclick = () => this.setOrientation('portrait');
+    this.dLandscape.onclick = () => this.setOrientation('landscape');
+
+    document.getElementById('dt-back').onclick = () => this.backToList();
+    document.getElementById('dt-create').onclick = () => this.confirmDetail();
+  }
+
+  showDetail(preset) {
+    const w = preset ? preset.w : 2480;
+    const h = preset ? preset.h : 3508;
+
+    this.dName.value = '未命名';
+    this.dW.value = w;
+    this.dH.value = h;
+
+    // 预设名带 dpi 就沿用（A4 · 300dpi），否则按边长猜一个合理的
+    const m = preset && /(\d+)\s*dpi/i.exec(preset.name);
+    this.dDpi.value = m ? Number(m[1]) : (Math.max(w, h) >= 2000 ? 300 : 150);
+
+    this.dBg.value = 'white';
+    this.setOrientation(h >= w ? 'portrait' : 'landscape');
+
+    this.viewList.hidden = true;
+    this.viewDetail.hidden = false;
+    this.refreshDetail();
+    this.dName.focus();
+    this.dName.select();
+  }
+
+  backToList() {
+    this.viewDetail.hidden = true;
+    this.viewList.hidden = false;
+  }
+
+  setOrientation(dir) {
+    const w = this.clamp(this.dW.value, 64, 12000);
+    const h = this.clamp(this.dH.value, 64, 12000);
+    const wantLandscape = dir === 'landscape';
+    const isLandscape = w > h;
+    // 只在需要时交换，避免把用户自己输的方形来回翻
+    if (w !== h && wantLandscape !== isLandscape) {
+      this.dW.value = h;
+      this.dH.value = w;
+    }
+    this.dPortrait.classList.toggle('on', dir === 'portrait');
+    this.dLandscape.classList.toggle('on', dir === 'landscape');
+    this.refreshDetail();
+  }
+
+  refreshDetail() {
+    const w = this.clamp(this.dW.value, 64, 12000);
+    const h = this.clamp(this.dH.value, 64, 12000);
+    const dpi = this.clamp(this.dDpi.value, 1, 1200);
+    const bg = this.dBg.value;
+
+    const mem = memMB(w, h);
+    const mp = (w * h / 1e6).toFixed(1);
+
+    this.dInfo.textContent =
+      `${w} × ${h} px · RGB · 8 位 · ${mp} MP · 约 ${mem} MB`
+      + (bg === 'transparent' ? ' · 透明底' : '');
+    this.dInfo.style.color = mem > 300 ? '#d99a4e' : '';
+
+    // 物理尺寸，按 dpi 换算 —— 打印前最实用的一行
+    const mmW = (w / dpi) * 25.4;
+    const mmH = (h / dpi) * 25.4;
+    this.dPhysical.textContent =
+      `${(mmW / 10).toFixed(1)} × ${(mmH / 10).toFixed(1)} cm @ ${dpi} ppi`
+      + (mem > 300 ? '　（8GB，偏大）' : '');
+
+    // 方向按钮跟着宽高走
+    if (w > h) {
+      this.dPortrait.classList.remove('on');
+      this.dLandscape.classList.add('on');
+    } else if (h > w) {
+      this.dLandscape.classList.remove('on');
+      this.dPortrait.classList.add('on');
+    }
+  }
+
+  confirmDetail() {
+    const w = this.clamp(this.dW.value, 64, 12000);
+    const h = this.clamp(this.dH.value, 64, 12000);
+    const name = (this.dName.value || '').trim() || '未命名';
+    this.hide();
+    this.onPick(w, h, {
+      name,
+      dpi: this.clamp(this.dDpi.value, 1, 1200),
+      background: this.dBg.value,
+    });
+  }
+
+  /* ---------- 最近 ---------- */
 
   refreshRecent() {
     const list = readRecent();
@@ -113,20 +243,36 @@ export class Splash {
       this.recentEl.appendChild(empty);
     } else {
       for (const item of list) {
-        const b = document.createElement('button');
-        b.className = 'splash-recent-item';
-        b.innerHTML = `
+        const row = document.createElement('div');
+        row.className = 'splash-recent-item';
+
+        const main = document.createElement('button');
+        main.className = 'ri-main';
+        main.innerHTML = `
           <span class="ri-name">${escapeHtml(item.name)}</span>
           <span class="ri-meta">${item.w && item.h ? item.w + ' × ' + item.h : ''}${
             item.w && item.h ? ' · ' : ''}${timeAgo(item.time)}</span>`;
+
         if (this.canOpenRecent && item.path) {
-          b.title = item.path;
-          b.onclick = () => this.onOpenRecent(item);
+          main.title = item.path;
+          main.onclick = () => this.onOpenRecent(item);
         } else {
-          b.disabled = true;
-          b.title = '浏览器里拿不到文件路径，请用右下角「打开文件…」';
+          main.disabled = true;
+          main.title = '浏览器里拿不到文件路径，请用「打开文件…」';
         }
-        this.recentEl.appendChild(b);
+
+        const del = document.createElement('button');
+        del.className = 'ri-del';
+        del.title = '从最近里移除';
+        del.innerHTML = '×';
+        del.onclick = ev => {
+          ev.stopPropagation();
+          this.askRemove(item, row);
+        };
+
+        row.appendChild(main);
+        row.appendChild(del);
+        this.recentEl.appendChild(row);
       }
     }
 
@@ -135,30 +281,39 @@ export class Splash {
       : '浏览器版不能按路径重开，用「打开文件…」选一次';
   }
 
-  bind() {
-    const onInput = () => this.updateHint();
-    this.inputW.addEventListener('input', onInput);
-    this.inputH.addEventListener('input', onInput);
+  /* 移除确认：先只删记录，再问要不要连源文件一起删 */
+  askRemove(item, row) {
+    const hasFile = this.canOpenRecent && item.path;
+    row.classList.add('confirming');
+    row.innerHTML = '';
 
-    document.getElementById('splash-create').onclick = () => {
-      this.pick(this.clamp(this.inputW.value, 64, 12000),
-                this.clamp(this.inputH.value, 64, 12000));
-    };
+    const bar = document.createElement('div');
+    bar.className = 'ri-confirm';
+    bar.innerHTML = `<span>移除这条记录？</span>`;
 
-    document.getElementById('splash-open').onclick = () => this.onOpen();
+    const keep = document.createElement('button');
+    keep.textContent = '仅移除记录';
+    keep.onclick = ev => { ev.stopPropagation(); this.onRemoveRecent(item, false); };
 
-    this._key = e => {
-      if (e.key === 'Escape' && !this.hidden) {
-        e.preventDefault();
-        this.dismiss();
-      }
-    };
-    window.addEventListener('keydown', this._key);
+    bar.appendChild(keep);
 
-    this.el.addEventListener('pointerdown', e => {
-      if (e.target === this.el) this.dismiss();
-    });
+    if (hasFile) {
+      const wipe = document.createElement('button');
+      wipe.className = 'danger';
+      wipe.textContent = '连文件一起删';
+      wipe.onclick = ev => { ev.stopPropagation(); this.onRemoveRecent(item, true); };
+      bar.appendChild(wipe);
+    }
+
+    const cancel = document.createElement('button');
+    cancel.textContent = '取消';
+    cancel.onclick = ev => { ev.stopPropagation(); this.refreshRecent(); };
+    bar.appendChild(cancel);
+
+    row.appendChild(bar);
   }
+
+  /* ---------- 通用 ---------- */
 
   clamp(v, lo, hi) {
     const n = Math.round(Number(v));
@@ -166,32 +321,27 @@ export class Splash {
     return Math.max(lo, Math.min(hi, n));
   }
 
-  updateHint() {
-    const w = this.clamp(this.inputW.value, 64, 12000);
-    const h = this.clamp(this.inputH.value, 64, 12000);
-    const mem = memMB(w, h);
-    const px = (w * h / 1e6).toFixed(1);
-    this.hint.textContent = `${px} 百万像素 · 约 ${mem} MB 内存`
-      + (mem > 300 ? '　（这台机器 8GB，偏大了）' : '');
-    this.hint.style.color = mem > 300 ? '#d99a4e' : '';
-  }
-
   get hidden() { return this.el.hasAttribute('hidden'); }
   show() { this.el.removeAttribute('hidden'); }
   hide() { this.el.setAttribute('hidden', ''); }
 
-  pick(w, h) {
-    this.hide();
-    this.onPick(w, h);
-  }
-
   dismiss() {
-    this.pick(this.defaultSize.w, this.defaultSize.h);
+    this.hide();
+    this.onPick(this.defaultSize.w, this.defaultSize.h, { name: '未命名', background: 'white' });
   }
 
   destroy() {
     window.removeEventListener('keydown', this._key);
   }
+}
+
+/* 从最近列表里去掉一条（只动 localStorage） */
+export function removeRecent(item) {
+  const list = readRecent().filter(x => !(x.path && item.path && x.path === item.path)
+    && !(!item.path && x.name === item.name && x.time === item.time));
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+  } catch { /* 忽略 */ }
 }
 
 function escapeHtml(s) {

@@ -125,7 +125,7 @@ export async function serialize(doc, extra = {}) {
     version: FORMAT_VERSION,
     app: extra.app || '0.1.0',
     created: new Date().toISOString(),
-    doc: { w: doc.w, h: doc.h },
+    doc: { w: doc.w, h: doc.h, background: doc.background || 'white' },
     view: { x: doc.view.x, y: doc.view.y, zoom: doc.view.zoom },
     brush: extra.brush || null,
     layers: doc.root.children.map(n => serializeNode(n, blocks)),
@@ -321,7 +321,7 @@ export async function parse(buffer) {
   // ---- 5. 图层树 ----
   if (!Array.isArray(header.layers)) throw new AchiFileError('头部缺 layers', 'BAD_TREE');
 
-  const doc = new Doc(docW, docH);
+  const doc = new Doc(docW, docH, { background: header.doc.background });
   doc.root.children.length = 0;
 
   const used = new Set();

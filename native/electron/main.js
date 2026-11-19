@@ -47,6 +47,12 @@ ipcMain.handle('achi:read', async (event, filePath) => {
   return { path: filePath, name: path.basename(filePath), data: new Uint8Array(buf).buffer };
 });
 
+/* 只在用户明确选「连文件一起删」时才会走到这里 */
+ipcMain.handle('achi:delete', async (event, filePath) => {
+  await fs.unlink(filePath);
+  return true;
+});
+
 ipcMain.handle('achi:open', async (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {

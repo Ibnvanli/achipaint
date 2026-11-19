@@ -234,3 +234,170 @@
 
 /* Electron 里红绿灯在左上，浮层不受影响；但面板别挡住拖拽区 */
 html.electron .splash-panel { -webkit-app-region: no-drag; }
+
+
+/* ---------- 二屏：详细设置 ---------- */
+
+.splash-view[hidden] { display: none; }
+
+.splash-custom-btn {
+  width: 100%;
+  height: 28px;
+  margin-top: var(--s-2);
+}
+
+.dt-grid {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: var(--s-2) var(--s-3);
+  align-items: center;
+}
+
+.dt-grid > label {
+  font-size: var(--t-s);
+  color: var(--fg-2);
+  text-align: right;
+}
+
+.dt-grid input[type="text"],
+.dt-grid input[type="number"],
+.dt-grid select {
+  height: 28px;
+  padding: 0 var(--s-2);
+  background: var(--bg-2);
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-s);
+  color: var(--fg-0);
+  font-family: inherit;
+  font-size: var(--t-s);
+  outline: none;
+}
+.dt-grid input[type="text"] { width: 100%; }
+.dt-grid input[type="number"] { width: 92px; font-family: var(--mono); }
+.dt-grid select { width: 100%; }
+.dt-grid input:focus,
+.dt-grid select:focus { border-color: var(--accent); }
+
+.dt-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.dt-unit { font-size: var(--t-s); color: var(--fg-2); }
+.dt-x { font-size: var(--t-s); color: var(--fg-2); }
+
+.dt-orient {
+  display: flex;
+  gap: 2px;
+  margin-left: var(--s-4);
+  padding: 2px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-s);
+}
+.dt-orient button {
+  width: 30px;
+  height: 20px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--fg-2);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.dt-orient button.on {
+  background: var(--bg-3);
+  color: var(--accent);
+}
+
+.dt-info {
+  margin-top: var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  background: var(--bg-2);
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-s);
+  font-family: var(--mono);
+  font-size: var(--t-s);
+  color: var(--fg-1);
+}
+
+#splash-view-detail .splash-foot {
+  align-items: center;
+  margin-top: var(--s-3);
+}
+
+/* ---------- 最近条目：主体 + 删除按钮 ---------- */
+
+.splash-recent-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-s);
+}
+.splash-recent-item:hover { background: var(--bg-2); border-color: var(--line-1); }
+
+.ri-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 5px var(--s-2);
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--fg-1);
+  font: inherit;
+  cursor: pointer;
+}
+.ri-main:disabled { cursor: default; opacity: .55; }
+
+.ri-del {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-right: 3px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-s);
+  color: var(--fg-2);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .1s, background .1s, color .1s;
+}
+.splash-recent-item:hover .ri-del { opacity: 1; }
+.ri-del:hover { background: var(--bg-3); color: #ff9a9a; }
+
+.splash-recent-item.confirming { background: var(--bg-2); border-color: var(--line-2); }
+
+.ri-confirm {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 4px var(--s-2);
+  font-size: var(--t-s);
+  color: var(--fg-2);
+}
+.ri-confirm > span { flex: 1; white-space: nowrap; }
+.ri-confirm button {
+  padding: 2px 7px;
+  background: var(--bg-3);
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-s);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: var(--t-s);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ri-confirm button:hover { border-color: var(--accent); color: var(--fg-0); }
+.ri-confirm button.danger { color: #ff9a9a; }
+.ri-confirm button.danger:hover { border-color: #b45454; background: #2a1c1c; }

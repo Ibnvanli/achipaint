@@ -160,6 +160,17 @@ export async function openByPath(p) {
   };
 }
 
+/* 连源文件一起删（只有 Electron 能做） */
+export function canDeleteFile() {
+  return !!(window.achiFile && window.achiFile.remove);
+}
+
+export async function deleteFile(p) {
+  if (!canDeleteFile() || !p) return false;
+  await window.achiFile.remove(p);
+  return true;
+}
+
 /* 这个环境能不能原地覆盖保存（决定「保存」和「另存为」要不要分开） */
 export function canOverwriteInPlace() {
   if (window.achiFile && window.achiFile.save) return true;

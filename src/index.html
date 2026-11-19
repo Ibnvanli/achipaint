@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AchiPaint</title>
-<link rel="stylesheet" href="./ui/theme.css?v=1795060000">
-<link rel="stylesheet" href="./ui/splash.css?v=1795060000">
+<link rel="stylesheet" href="./ui/theme.css?v=1795063000">
+<link rel="stylesheet" href="./ui/splash.css?v=1795063000">
 </head>
 <body>
 <div class="app">
@@ -122,37 +122,73 @@
       <span class="splash-ver">v0.1.0</span>
     </header>
 
-    <div class="splash-main">
+    <!-- 一屏：预设 + 最近 -->
+    <div class="splash-view" id="splash-view-list">
+      <div class="splash-main">
+        <section class="splash-col">
+          <h3>新建画布</h3>
+          <div class="splash-grid" id="splash-presets"></div>
+          <button class="btn splash-custom-btn" id="splash-custom">自定义尺寸…</button>
+        </section>
 
-      <section class="splash-col">
-        <h3>新建画布</h3>
-        <div class="splash-grid" id="splash-presets"></div>
+        <section class="splash-col splash-col-recent">
+          <h3>最近</h3>
+          <div class="splash-recent" id="splash-recent"></div>
+          <button class="btn splash-open" id="splash-open">打开文件…</button>
+        </section>
+      </div>
 
-        <div class="splash-custom">
-          <span>自定义</span>
-          <input id="splash-w" type="number" min="64" max="12000" step="1" value="2480">
-          <span class="splash-x">×</span>
-          <input id="splash-h" type="number" min="64" max="12000" step="1" value="3508">
-          <button class="btn primary" id="splash-create">创建</button>
-        </div>
-        <p class="splash-hint" id="splash-hint"></p>
-      </section>
-
-      <section class="splash-col splash-col-recent">
-        <h3>最近</h3>
-        <div class="splash-recent" id="splash-recent"></div>
-        <button class="btn splash-open" id="splash-open">打开文件…</button>
-      </section>
-
+      <footer class="splash-foot">
+        <span class="splash-dim" id="splash-note"></span>
+        <span class="splash-dim">Esc 用默认尺寸</span>
+      </footer>
     </div>
 
-    <footer class="splash-foot">
-      <span class="splash-dim" id="splash-note"></span>
-      <span class="splash-dim">Esc 用默认尺寸</span>
-    </footer>
+    <!-- 二屏：详细设置 -->
+    <div class="splash-view" id="splash-view-detail" hidden>
+      <div class="dt-grid">
+        <label for="dt-name">名称</label>
+        <input id="dt-name" type="text" value="未命名" maxlength="60">
+
+        <label for="dt-w">宽度</label>
+        <div class="dt-row">
+          <input id="dt-w" type="number" min="64" max="12000" step="1" value="2480">
+          <span class="dt-x">×</span>
+          <input id="dt-h" type="number" min="64" max="12000" step="1" value="3508" aria-label="高度">
+          <span class="dt-unit">px</span>
+        </div>
+
+        <label for="dt-dpi">分辨率</label>
+        <div class="dt-row">
+          <input id="dt-dpi" type="number" min="1" max="1200" step="1" value="300">
+          <span class="dt-unit">ppi</span>
+          <div class="dt-orient" role="group" aria-label="方向">
+            <button id="dt-portrait" class="on" title="竖版">▯</button>
+            <button id="dt-landscape" title="横版">▭</button>
+          </div>
+        </div>
+
+        <label for="dt-bg">背景</label>
+        <div class="dt-row">
+          <select id="dt-bg">
+            <option value="white">白色</option>
+            <option value="transparent">透明</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="dt-info" id="dt-info"></div>
+
+      <footer class="splash-foot">
+        <button class="btn" id="dt-back">返回</button>
+        <span class="splash-dim" id="dt-physical"></span>
+        <button class="btn primary" id="dt-create">创建</button>
+      </footer>
+    </div>
+
   </div>
 </div>
 
-<script type="module" src="./main.js?v=1795060000"></script>
+<script type="module" src="./main.js?v=1795063000"></script>
 </body>
 </html>
