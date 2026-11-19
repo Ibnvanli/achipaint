@@ -9,9 +9,9 @@ import { Bus, PluginHost } from './core/bus.js';
 import { DEFAULT_SWATCHES } from './core/color.js';
 import { Slider } from './ui/widgets.js';
 import { ColorPicker } from './ui/colorpicker.js';
-import { Splash } from './ui/splash.js';
+import { Splash, pushRecent } from './ui/splash.js';
 import { serialize, parse, AchiFileError } from './core/format.js';
-import { saveFile, openFile } from './platform/fileio.js';
+import { saveFile, openFile, openByPath, canOpenByPath } from './platform/fileio.js';
 import pngExporter from './plugins/export-png.js';
 
 const $ = id => document.getElementById(id);
@@ -1147,7 +1147,8 @@ async function doSave(forceDialog = false) {
     const r = await saveFile(blob, { name: docName, forceDialog });
     if (r.saved) {
       // 保存成功才改名字；下载兜底时保留原名
-      if (r.where !== 'download') setDocName(r.name.replace(/\.achi$/i, ''));
+      if (!r.download) setDocName(r.name.replace(/\.achi$/i, ''));
+      pushRecent({ name: r.name, path: r.path || null, w: doc.w, h: doc.h });
     }
     return r.saved;
   } catch (e) {
@@ -1159,38 +1160,45 @@ async function doSave(forceDialog = false) {
   }
 }
 
-async function doOpen() {
+/* 把一份解析好的文档装上。调用方保证 parse 已经成功。 */
+function installDocument(loaded, name, path) {
+  doc = loaded;
+  hk.doc = doc;
+  hk.canvas = null;
+  hk.current = null;
+
+  history.stack = [];
+  history.index = -1;
+  history.bytes = 0;
+  stroke = null;
+  pending = null;
+  gesture = null;
+
+  setDocName(name.replace(/\.achi$/i, ''));
+  $('st-size').textContent = doc.w + ' × ' + doc.h;
+  renderLayers();
+
+  pushRecent({ name: name, path: path || null, w: doc.w, h: doc.h });
+
+  /* 必须 redraw() 而不是 requestPaint()：新文档的 dirtyTiles 是空的，
+   * flushDirty 什么都不做，doc.off 里还留着上一张画的画面 ——
+   * 表现就是「打开之后一片空白，动一下才出来」。 */
+  redraw();
+}
+
+async function doOpen(fromPath) {
   const btn = $('btn-open');
   const old = btn.textContent;
   btn.textContent = '打开中…';
   btn.disabled = true;
   try {
-    const picked = await openFile();
+    const picked = fromPath
+      ? await openByPath(fromPath)
+      : await openFile();
     if (!picked) return false;
 
     const { doc: loaded, warnings } = await parse(picked.buffer);
-
-    /* —— 到这里才动当前文档 —— */
-    doc = loaded;
-    hk.doc = doc;
-    hk.canvas = null;
-    hk.current = null;
-
-    history.stack = [];
-    history.index = -1;
-    history.bytes = 0;
-    stroke = null;
-    pending = null;
-    gesture = null;
-
-    setDocName(picked.name.replace(/\.achi$/i, ''));
-    $('st-size').textContent = doc.w + ' × ' + doc.h;
-    renderLayers();
-    /* 必须 redraw() 而不是 requestPaint()：新文档的 dirtyTiles 是空的，
-     * flushDirty 什么都不做，doc.off 里还留着上一张画的画面 ——
-     * 表现就是「打开之后一片空白，动一下才出来」。 */
-    redraw();
-
+    installDocument(loaded, picked.name, picked.path);
     if (warnings && warnings.length) console.warn('[打开] 有告警：', warnings);
     return true;
   } catch (e) {
@@ -1201,6 +1209,7 @@ async function doOpen() {
     btn.disabled = false;
   }
 }
+
 
 $('btn-save').onclick = () => doSave(false);
 $('btn-open').onclick = () => doOpen();
@@ -1247,7 +1256,11 @@ initHokusai();
 if (!HAS_SIZE) {
   const splash = new Splash({
     defaultSize: { w: DW, h: DH },
+    canOpenRecent: canOpenByPath(),
     onPick: (w, h) => newDocument(w, h),
+    /* 打开成功才收起浮层：失败的话（坏文件）还留在原地，用户能继续选别的 */
+    onOpen: async () => { if (await doOpen()) splash.hide(); },
+    onOpenRecent: async (entry) => { if (await doOpen(entry.path)) splash.hide(); },
   });
   splash.show();
 }

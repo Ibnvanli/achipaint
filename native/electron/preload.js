@@ -5,4 +5,5 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('achiFile', {
   save: (bytes, suggestedName) => ipcRenderer.invoke('achi:save', bytes, suggestedName),
   open: () => ipcRenderer.invoke('achi:open'),
+  read: (filePath) => ipcRenderer.invoke('achi:read', filePath),
 });

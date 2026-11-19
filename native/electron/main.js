@@ -41,6 +41,12 @@ ipcMain.handle('achi:save', async (event, bytes, suggestedName) => {
   return target;
 });
 
+/* 按路径直读：给启动页的「最近」用 */
+ipcMain.handle('achi:read', async (event, filePath) => {
+  const buf = await fs.readFile(filePath);
+  return { path: filePath, name: path.basename(filePath), data: new Uint8Array(buf).buffer };
+});
+
 ipcMain.handle('achi:open', async (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {

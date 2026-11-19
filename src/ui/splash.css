@@ -26,7 +26,7 @@
 }
 
 .splash-panel {
-  width: 580px;
+  width: 720px;
   max-width: calc(100vw - 48px);
   max-height: calc(100vh - 48px);
   overflow-y: auto;
@@ -52,7 +52,13 @@
   margin-bottom: var(--s-4);
 }
 
-.splash-mark { width: 30px; height: 30px; flex: 0 0 auto; }
+.splash-mark {
+  width: 34px; height: 34px; flex: 0 0 auto;
+  border-radius: 9px;
+  /* 和 Dock 里是同一张图，不另外画一个「差不多的」标记。
+   * 图标本身是深底，在深色面板上几乎看不出边界，描一道细边把它托起来。 */
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .07);
+}
 
 .splash-id { display: flex; flex-direction: column; line-height: 1.25; }
 .splash-id b { font-size: var(--t-l); font-weight: 600; }
@@ -102,6 +108,85 @@
 /* 内存吃紧的档位给个暖色提示，8GB 机器上很现实 */
 .splash-card.heavy .m { color: #d99a4e; }
 
+/* ---------- 两栏 ---------- */
+
+.splash-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: var(--s-4);
+  align-items: stretch;   /* 右栏撑满，按钮才能沉到底 */
+}
+
+.splash-col h3 {
+  margin: 0 0 var(--s-2);
+  font-size: var(--t-s);
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+}
+
+.splash-col-recent { display: flex; flex-direction: column; min-height: 0; }
+
+.splash-grid { grid-template-columns: repeat(2, 1fr); }
+
+/* ---------- 最近 ---------- */
+
+.splash-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-height: 92px;
+  max-height: 100%;
+  overflow-y: auto;
+  margin-bottom: var(--s-2);
+}
+
+.splash-empty {
+  margin: 0;
+  padding: var(--s-3) var(--s-2);
+  color: var(--fg-2);
+  font-size: var(--t-s);
+  text-align: center;
+  border: 1px dashed var(--line-1);
+  border-radius: var(--r-s);
+}
+
+.splash-recent-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 5px var(--s-2);
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-s);
+  color: var(--fg-1);
+  font: inherit;
+  cursor: pointer;
+}
+.splash-recent-item:hover:not(:disabled) {
+  background: var(--bg-2);
+  border-color: var(--line-2);
+  color: var(--fg-0);
+}
+.splash-recent-item:disabled { cursor: default; opacity: .55; }
+
+.splash-recent-item .ri-name {
+  font-size: var(--t-s);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.splash-recent-item .ri-meta {
+  font-size: var(--t-s);
+  color: var(--fg-2);
+  opacity: .85;
+}
+
+.splash-open { width: 100%; height: 26px; margin-top: auto; }
+
 /* ---------- 自定义 ---------- */
 
 .splash-custom {
@@ -140,6 +225,7 @@
 .splash-foot {
   display: flex;
   justify-content: space-between;
+  gap: var(--s-3);
   margin-top: var(--s-3);
   padding-top: var(--s-2);
   border-top: 1px solid var(--line-1);

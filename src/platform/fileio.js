@@ -74,7 +74,7 @@ export async function saveFile(blob, opts = {}) {
   if (window.achiFile && window.achiFile.save) {
     const buf = new Uint8Array(await blob.arrayBuffer());
     const path = await window.achiFile.save(buf, name);
-    return path ? { saved: true, name: path.split('/').pop(), where: path } : { saved: false };
+    return path ? { saved: true, name: path.split('/').pop(), path } : { saved: false };
   }
 
   // 2) File System Access：已有句柄就原地写
@@ -83,7 +83,7 @@ export async function saveFile(blob, opts = {}) {
       const w = await currentHandle.createWritable();
       await w.write(blob);
       await w.close();
-      return { saved: true, name: currentHandle.name, where: 'same-file' };
+      return { saved: true, name: currentHandle.name, path: null };
     } catch {
       currentHandle = null;   // 句柄失效，退回另存
     }
@@ -99,7 +99,7 @@ export async function saveFile(blob, opts = {}) {
       await w.write(blob);
       await w.close();
       currentHandle = handle;
-      return { saved: true, name: handle.name, where: 'picked' };
+      return { saved: true, name: handle.name, path: null };
     } catch (e) {
       if (e && e.name === 'AbortError') return { saved: false };
       // 其它错误继续走下载兜底
@@ -107,7 +107,7 @@ export async function saveFile(blob, opts = {}) {
   }
 
   downloadBlob(blob, name);
-  return { saved: true, name, where: 'download' };
+  return { saved: true, name, path: null, download: true };
 }
 
 /**
@@ -142,6 +142,22 @@ export async function openFile() {
   const picked = await pickWithInput();
   if (picked) currentHandle = null;
   return picked;
+}
+
+/* 按已知路径直接读（只有 Electron 能拿到路径） */
+export function canOpenByPath() {
+  return !!(window.achiFile && window.achiFile.read);
+}
+
+export async function openByPath(p) {
+  if (!canOpenByPath()) return null;
+  const r = await window.achiFile.read(p);
+  if (!r) return null;
+  return {
+    name: r.name,
+    path: r.path,
+    buffer: r.data instanceof ArrayBuffer ? r.data : r.data.buffer,
+  };
 }
 
 /* 这个环境能不能原地覆盖保存（决定「保存」和「另存为」要不要分开） */
