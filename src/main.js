@@ -369,6 +369,10 @@ view.addEventListener('pointerdown', e => {
   const layer = doc.paintTarget;
   if (!layer) return;
   // 蒙版上画的是「透明度」，颜色固定白色，只有 alpha 有意义
+  /* 蒙版是 alpha 通道：alpha=255 显示、0 遮住。
+   * 但用户（和 PS）的直觉是「涂黑就遮住」，所以按笔刷颜色的**亮度**换算 alpha：
+   * 黑色 → 全遮，白色 → 全显，灰色 → 半透明。 */
+  // 蒙版上只画 alpha：一律白色，靠 erase 决定是 255 还是 0
   const paintBrush = doc.maskMode ? { ...brush, color: '#ffffff' } : brush;
 
   if (tool === 'pick') {
@@ -387,8 +391,9 @@ view.addEventListener('pointerdown', e => {
   // 真正动到某块时才给它拍快照（Stroke 里的 onFirstTouch 回调）。
   pending = history.beginStroke(layer);
 
-  // 画笔走 hokusai（.myb 笔刷）；橡皮和「hokusai 没就位」都还走内置引擎
-  if (tool === 'brush' && hk.ready) {
+  /* 画笔走 hokusai（.myb 笔刷）；橡皮、蒙版模式、以及引擎没就位时都走内置引擎。
+   * 蒙版必须走内置的：hokusai 只认 HSV 颜色，做不出 alpha，也就擦不掉。 */
+  if (tool === 'brush' && hk.ready && !doc.maskMode) {
     const ok = hk.begin(p.x, p.y, pressure, tiltOpts(e, p));
     if (ok) { markDirty(true); op('落笔', tool, Math.round(p.x) + ',' + Math.round(p.y)); requestPaint(); bus.emit('stroke:begin', { x: p.x, y: p.y }); return; }
   }
@@ -397,7 +402,10 @@ view.addEventListener('pointerdown', e => {
   // 落笔时把「这一笔可能覆盖的区域」原样抓下来；笔移动越界会继续补拍
   stroke.onRegion = (x0, y0, x1, y1) => history.grabRegion(pending, x0, y0, x1, y1);
   stroke.clip = doc.selection;
-  if (tool === 'eraser') stroke.erase = true;
+  /* 蒙版是 alpha 通道（255=显示，0=遮住）。
+   * 工具语义要反过来才对得上直觉：在蒙版上「画」= 擦掉内容，橡皮才是恢复。 */
+  const eraseWanted = doc.maskMode ? (tool !== 'eraser') : (tool === 'eraser');
+  if (eraseWanted) stroke.erase = true;
   stroke.begin(p.x, p.y, pressure);   // begin 内部已落第一个点
   requestPaint();
   bus.emit('stroke:begin', { x: p.x, y: p.y });
@@ -411,7 +419,7 @@ function tiltOpts(e, p) {
     preset: hk.name,
     size: brush.size,
     opacity: brush.opacity,
-    color: doc.maskMode ? '#ffffff' : brush.color,
+    color: brush.color,
     stabilize: brush.stabilize,
     tiltX: isPen ? (e.tiltX || 0) / 90 : 0,
     tiltY: isPen ? (e.tiltY || 0) / 90 : 0,
