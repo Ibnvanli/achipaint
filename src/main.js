@@ -405,9 +405,32 @@ const refZoom = $('ref-zoom');
 let refScale = 1;
 let refUrl = null;
 
+/* 上边 38px 是 macOS 红绿灯，左边 48px 是工具栏 —— 参考窗别压上去 */
+const REF_TOP_MIN = 52;
+const REF_LEFT_MIN = 56;
+
+function refClamp() {
+  const r = refWin.getBoundingClientRect();
+  let l = r.left, t = r.top;
+  let changed = false;
+  if (t < REF_TOP_MIN) { t = REF_TOP_MIN; changed = true; }
+  if (l < REF_LEFT_MIN) { l = REF_LEFT_MIN; changed = true; }
+  if (l + r.width > window.innerWidth - 8) { l = Math.max(0, window.innerWidth - r.width - 8); changed = true; }
+  if (t + 40 > window.innerHeight) { t = Math.max(REF_TOP_MIN, window.innerHeight - 40); changed = true; }
+  if (changed) {
+    refWin.style.right = 'auto';
+    refWin.style.left = l + 'px';
+    refWin.style.top = t + 'px';
+  }
+}
+
 function refShow(on) {
   refWin.toggleAttribute('hidden', !on);
-  if (on && !refImg.src) refEmpty.hidden = false;
+  if (on) {
+    if (!refImg.src) refEmpty.hidden = false;
+    // 布局完成后校正一次：拖过的地方可能已经跑到标题栏底下了
+    requestAnimationFrame(refClamp);
+  }
 }
 $('ref-close').onclick = () => refShow(false);
 
@@ -482,6 +505,8 @@ refBody.addEventListener('wheel', e => {
     dragging = true;
     head.setPointerCapture(e.pointerId);
     const r = refWin.getBoundingClientRect();
+    // 取不到有效位置时不要拿 0,0 当锚点，会直接把窗钉在屏幕原点
+    if (!r.width || !r.height) return;
     ox = e.clientX - r.left;
     oy = e.clientY - r.top;
     refWin.style.right = 'auto';
@@ -490,8 +515,9 @@ refBody.addEventListener('wheel', e => {
   });
   head.addEventListener('pointermove', e => {
     if (!dragging) return;
-    refWin.style.left = Math.max(0, Math.min(window.innerWidth - 80, e.clientX - ox)) + 'px';
-    refWin.style.top = Math.max(0, Math.min(window.innerHeight - 60, e.clientY - oy)) + 'px';
+    refWin.style.left = Math.max(REF_LEFT_MIN, Math.min(window.innerWidth - 80, e.clientX - ox)) + 'px';
+    // 别拖进标题栏：那 38px 是红绿灯
+    refWin.style.top = Math.max(REF_TOP_MIN, Math.min(window.innerHeight - 60, e.clientY - oy)) + 'px';
   });
   head.addEventListener('pointerup', e => {
     dragging = false;
