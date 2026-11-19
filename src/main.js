@@ -1457,10 +1457,20 @@ function startRename(node, span) {
   });
 }
 
+/* 缩略图底纹：4px 棋盘格（原来 CSS 里 8px 在 26px 方框内正好排成 6 块，像重复了 6 次） */
+function paintChecker(ctx, size, step = 4) {
+  for (let y = 0; y < size; y += step) {
+    for (let x = 0; x < size; x += step) {
+      ctx.fillStyle = (((x / step) | 0) + ((y / step) | 0)) % 2 ? '#ffffff' : '#dcdcdc';
+      ctx.fillRect(x, y, step, step);
+    }
+  }
+}
+
 /* ---------- 图层缩略图 ----------
  * 缩略图要重画整层的瓦片，所以按「内容有没有变过」缓存，不能每次渲染都算。
  */
-function layerThumb(node, size = 26) {
+function layerThumb(node, size = 32) {
   if (node.isGroup) return null;
   const tc = node.canvas;
   if (!tc || tc.tiles.size === 0) return null;
@@ -1470,9 +1480,9 @@ function layerThumb(node, size = 26) {
 
   const cv = newCanvas(size, size);
   const ctx = cv.getContext('2d');
+  /* 先铺棋盘格底：透明区域一眼能看出来，浅色内容在白底上也不会消失 */
+  paintChecker(ctx, size);
   const s2 = Math.min(size / doc.w, size / doc.h);
-  const w = Math.max(1, Math.round(doc.w * s2));
-  const h = Math.max(1, Math.round(doc.h * s2));
   ctx.imageSmoothingEnabled = true;
   for (const t of tc.tiles.values()) {
     ctx.drawImage(t.canvas, 0, 0, 256, 256,
@@ -1494,7 +1504,13 @@ function refreshThumbs() {
     const t = row.querySelector('.lay-thumb');
     if (!t) continue;
     const url = layerThumb(node);
-    if (url) t.style.backgroundImage = `url(${url})`;
+    if (url) {
+      t.style.backgroundImage = `url(${url})`;
+      t.classList.remove('empty');
+    } else {
+      t.style.backgroundImage = '';
+      t.classList.add('empty');
+    }
   }
 }
 
@@ -1503,7 +1519,7 @@ function bumpThumbStamp(tc) {
   if (tc) tc._dirtyStamp = (tc._dirtyStamp || 0) + 1;
 }
 
-function maskThumb(node, size = 26) {
+function maskThumb(node, size = 32) {
   const m = node.mask;
   if (!m || m.tiles.size === 0) return null;
   const stamp = 'm' + m.tiles.size + ':' + history.stack.length + ':' + (m._dirtyStamp || 0);
@@ -1513,6 +1529,7 @@ function maskThumb(node, size = 26) {
   const ctx = cv.getContext('2d');
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, size, size);            // 蒙版看不见 = 黑底
+  // 注：蒙版缩略图不用棋盘格，黑=遮住、白=显示，本身就有语义
   const s2 = Math.min(size / doc.w, size / doc.h);
   for (const t of m.tiles.values()) {
     ctx.drawImage(t.canvas, 0, 0, 256, 256,

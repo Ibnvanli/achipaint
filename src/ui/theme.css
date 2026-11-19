@@ -768,7 +768,7 @@ canvas { display: block; position: absolute; inset: 0; }
 
 /* 图层缩略图 */
 .lay-thumb {
-  width: 26px; height: 26px;
+  width: 32px; height: 32px;
   flex: 0 0 auto;
   border-radius: 3px;
   border: 1px solid var(--line-2);
@@ -778,11 +778,12 @@ canvas { display: block; position: absolute; inset: 0; }
   image-rendering: auto;
 }
 .lay-thumb.empty {
+  /* 格子缩小到 4px：原来 8px 在 26px 方框里正好排成 6 块，看着像「重复了 6 次」 */
   background-image:
-    linear-gradient(45deg, #333 25%, transparent 25%, transparent 75%, #333 75%),
-    linear-gradient(45deg, #333 25%, #222 25%, #222 75%, #333 75%);
-  background-size: 8px 8px;
-  background-position: 0 0, 4px 4px;
+    linear-gradient(45deg, #2e2e2c 25%, transparent 25%, transparent 75%, #2e2e2c 75%),
+    linear-gradient(45deg, #2e2e2c 25%, #3a3a37 25%, #3a3a37 75%, #2e2e2c 75%);
+  background-size: 4px 4px;
+  background-position: 0 0, 2px 2px;
 }
 .lay-thumb.mask {
   filter: contrast(1.15);
