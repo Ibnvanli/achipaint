@@ -1530,6 +1530,10 @@ function installDocument(loaded, name, path) {
 
   pushRecent({ name: name, path: path || null, w: doc.w, h: doc.h });
 
+  /* 任何入口装上了文档，启动浮层都该收起 —— 包括拖拽进来这条。
+   * 放在这里而不是每个调用点，是因为「忘记调」的代价是浮层赖着不走。 */
+  if (splashRef) splashRef.hide();
+
   /* 必须 redraw() 而不是 requestPaint()：新文档的 dirtyTiles 是空的，
    * flushDirty 什么都不做，doc.off 里还留着上一张画的画面 ——
    * 表现就是「打开之后一片空白，动一下才出来」。 */
