@@ -214,15 +214,7 @@ html.electron .titlebar select {
   -webkit-app-region: no-drag;
 }
 .toolcol { background: var(--bg-1); padding: var(--s-2) 0; display: flex; flex-direction: column; align-items: center; gap: var(--s-1); }
-.stage {
-  background: var(--bg-0); position: relative; overflow: hidden;
-  /* 画布区域必须自己接管指针手势。
-   * 缺这条时浏览器会把笔/手指的拖动当作滚动或缩放手势处理，
-   * 表现为 pointermove 被中断、pressure 被丢弃、pointercancel 提前触发。
-   * Electron 版长期看不出问题是因为它跑在无浏览器手势语义的壳里；
-   * 网页版在普通浏览器中打开才会暴露。 */
-  touch-action: none;
-}
+.stage { background: var(--bg-0); position: relative; overflow: hidden; }
 .sidebar {
   background: var(--bg-1);
   position: relative;
@@ -544,7 +536,7 @@ html.electron .titlebar select {
 /* 只对 #view 生效。此前写成全局 `canvas { position: absolute; inset: 0 }`，
  * 把所有 canvas 都拉成绝对定位 —— 图层缩略图也是 canvas，
  * 因此脱离 flex 流、贴到行的左上角，与相邻元素错位且不参与布局。 */
-#view { display: block; position: absolute; inset: 0; touch-action: none; }
+#view { display: block; position: absolute; inset: 0; }
 
 /* 状态条 */
 .statusbar .sep { width: 1px; height: 12px; background: var(--line-2); }

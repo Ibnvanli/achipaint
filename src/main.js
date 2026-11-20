@@ -277,141 +277,14 @@ function redraw() {
   requestPaint();
 }
 
-/* 压感取值。
- *
- * 鼠标没有压感，e.pressure 恒为 0.5。直接交给 .myb 笔刷会得到极细的线条 ——
- * 其压力曲线按 0~1 设计，0.5 在 radius 曲线上仅对应 -0.35，直径缩减超过一半。
- * 因此无压感设备一律按满压处理。
- *
- * 不能只靠 pointerType 判断。某些浏览器 / 驱动会把数位板同样报告为 'pen'，
- * 却始终只给 0.5 这个占位值 —— 这时按 pen 分支走就会满屏细线，
- * 表现为「网页版没有压感」。反过来也有把数位板报成 'mouse' 的情况。
- *
- * 因此改为观测本笔的压力范围：只要压力在变，就是真压感，采信它；
- * 若压力从头到尾不变，判定为无压感设备，按满压处理。
- */
-const pressureObs = { min: 1, max: 0, n: 0 };
-
-/* 本设备是否提供可用的压感。null = 尚未判定。
- *
- * 判定放在**一笔结束之后**，绝不在笔画中途切换 ——
- * 中途切换会让线条粗细突变，表现为末端突然出现一个粗块（拖尾）。
- * 曾在 pressureOf 里按「压力是否变化」实时判断，画一条恒压的线时
- * 前两个点细、之后全粗，就是这样产生的。
- */
-let penPressureUsable = null;
-
-/* 每笔开始时重置观测。 */
-function resetPressureObs() {
-  pressureObs.min = 1; pressureObs.max = 0; pressureObs.n = 0;
+/* 鼠标没有压感，e.pressure 恒为 0.5。
+ * 直接传给 .myb 笔刷会得到极细的线条 —— 其压力曲线按 0~1 设计，
+ * 0.5 在 radius 曲线上仅对应 -0.35，直径缩减超过一半。
+ * 因此仅压感笔使用真实压力，鼠标统一按满压处理。 */
+function pressureOf(e) {
+  if (e.pointerType === 'pen') return e.pressure > 0 ? e.pressure : 0.5;
+  return 1;
 }
-
-/* 一笔结束时结算，更新对设备的判定。
- * 样本太少（点一下、极短划）不下结论，避免误判。 */
-function settlePressureObs() {
-  if (pressureObs.n < 4) return;
-  penPressureUsable = (pressureObs.max - pressureObs.min) > 0.01;
-}
-
-function pressureOf(e, fallback = null) {
-  /* 取用压力值。三层兜底，顺序不能乱：
-   *   1) 事件自身的 pressure（有压感设备在多数浏览器里的正常情况）
-   *   2) 调用方给的兜底值 —— 合并事件不完整时，用原始事件的值补上
-   *      （Safari 的 getCoalescedEvents() 返回的事件 pressure 常为 0）
-   *   3) 0.5 —— 仍无数据时按规范占位值处理，交由下面的判定决定去留
-   */
-  let p = typeof e.pressure === 'number' ? e.pressure : 0;
-  if (!(p > 0) && typeof fallback === 'number' && fallback > 0) p = fallback;
-  const valid = p > 0;
-  if (!valid) p = 0.5;
-
-  pressureObs.min = Math.min(pressureObs.min, p);
-  pressureObs.max = Math.max(pressureObs.max, p);
-  pressureObs.n++;
-
-  if (e.pointerType === 'pen') {
-    if (!valid) return 1;                    // 本事件没有压力数据
-
-    /* 已判定该设备不提供压感：按满压画。
-     * 但只要这一笔又观测到压力变化，立刻改回来 ——
-     * 用户换了笔或换了驱动时不必重启应用。 */
-    if (penPressureUsable === false) {
-      if (pressureObs.max - pressureObs.min > 0.01) {
-        penPressureUsable = true;
-        return p;
-      }
-      return 1;
-    }
-
-    /* 尚未判定或已判定可用：一律采信真实压力。
-     * 即使压力恒定（画者用力稳定），也应照实画，不能中途换成满压。 */
-    return p;
-  }
-
-  /* 非 pen 设备：鼠标的 pressure 恒为 0.5，是占位值不是真实压力。
-   * 但只要不在 0.5 上，就说明设备确实在报压感（部分浏览器把数位板报成 mouse）。 */
-  if (!valid || p === 0.5) return 1;
-  return p;
-}
-
-
-/* 诊断入口：在网页版里执行 `__achiPointerProbe()` 后画一笔，
- * 控制台会打印浏览器实际报告的指针类型与压力，便于确认压感缺失出在哪一环。 */
-window.__achiPointerProbe = function () {
-  const v = document.getElementById('view');
-  const rows = [];
-  const rec = e => {
-    /* 同时记录原始事件与合并事件的压力。
-     * 两者不一致通常意味着浏览器的 getCoalescedEvents() 实现不完整 ——
-     * Safari 就是这种情况：合并事件的 pressure 为 0，而原始事件有真实值。 */
-    let co = null;
-    if (typeof e.getCoalescedEvents === 'function') {
-      try {
-        const got = e.getCoalescedEvents();
-        co = got ? got.map(x => +(x.pressure || 0).toFixed(3)) : [];
-      } catch { co = 'throw'; }
-    }
-    rows.push({
-      type: e.pointerType,
-      pressure: +(e.pressure || 0).toFixed(3),
-      coalesced: co === null ? 'n/a' : (Array.isArray(co) ? co.join(',') || '空' : co),
-      tiltX: e.tiltX, tiltY: e.tiltY,
-      width: +(e.width || 0).toFixed(2),
-    });
-  };
-  ['pointerdown', 'pointermove', 'pointerup'].forEach(t => v.addEventListener(t, rec, true));
-  console.info('[探针] 已开始记录，请用笔在画布上画一笔（3 秒）');
-
-  return new Promise(resolve => {
-    setTimeout(() => {
-      ['pointerdown', 'pointermove', 'pointerup'].forEach(t => v.removeEventListener(t, rec, true));
-
-      const types = [...new Set(rows.map(r => r.type))];
-      const ps = [...new Set(rows.map(r => r.pressure))];
-      const coAll = rows.flatMap(r => (typeof r.coalesced === 'string' && r.coalesced !== 'n/a')
-        ? r.coalesced.split(',') : []).filter(x => x !== '空' && x !== 'throw');
-      const coPs = [...new Set(coAll)];
-
-      console.table(rows.slice(0, 20));
-      console.info(`[探针] 共 ${rows.length} 个事件`);
-      console.info(`[探针] pointerType = ${types.join(' / ')}`);
-      console.info(`[探针] 原始事件压力取值 = ${ps.slice(0, 8).join(', ')}${ps.length > 8 ? ' …' : ''}`);
-      if (coPs.length) console.info(`[探针] 合并事件压力取值 = ${coPs.slice(0, 8).join(', ')}`);
-
-      let conclusion;
-      if (ps.length > 1) conclusion = '原始事件压力有变化 → 压感可用';
-      else if (coPs.length > 1) conclusion = '原始事件压力恒定、合并事件有变化 → 压力取错了来源';
-      else if (parseFloat(ps[0]) === 0) conclusion = '压力恒为 0 → 此浏览器未把压力交给页面';
-      else if (parseFloat(ps[0]) === 0.5) conclusion = '压力恒为 0.5 → 占位值，此设备在此浏览器下不提供压感';
-      else conclusion = '压力恒定 → 无压感数据';
-      console.info(`[探针] 结论：${conclusion}`);
-
-      resolve({
-        count: rows.length, types, original: ps, coalesced: coPs, conclusion,
-      });
-    }, 3000);
-  });
-};
 
 /* ---------- 坐标换算 ---------- */
 function toDoc(e) {
@@ -433,8 +306,6 @@ view.addEventListener('pointerdown', e => {
   // 即使在真机上捕获失败，也不应中断整个落笔流程。
   try { view.setPointerCapture(e.pointerId); } catch { /* 合成事件或已释放 */ }
   const p = toDoc(e);
-  /* 每笔重新观测压力范围，避免上一笔的结论影响这一笔。 */
-  resetPressureObs();
   const pressure = pressureOf(e);
 
   /* 非绘画工具：优先处理并返回，不进入后续笔画流程 */
@@ -606,18 +477,10 @@ view.addEventListener('pointermove', e => {
     if (got && got.length) evts = got;
   }
 
-  /* 原始事件上有效的压力值，用作合并事件的兜底。
-   *
-   * 合并事件并不保证是完整的 PointerEvent —— Safari 返回的合并事件里
-   * pressure 常为 0 或 undefined。若直接采信，整笔的压力会全部无效，
-   * 表现为「Safari 上没有压感，Chrome / Edge 正常」。
-   * 因此压力优先取合并事件自身的值，无效时回退到原始事件。 */
-  const baseP = (typeof e.pressure === 'number' && e.pressure > 0) ? e.pressure : null;
-
   if (hk.active) {
     for (const ev of evts) {
       const q = toDoc(ev);
-      hk.move(q.x, q.y, pressureOf(ev, baseP), tiltOpts(ev, q));
+      hk.move(q.x, q.y, pressureOf(ev), tiltOpts(ev, q));
     }
     /* 此处**不**执行 flush。
      * pump() 单次需搬运数十个 64×64 块（实测 p90 8.5ms），而压感笔约每 4ms 产生一个事件；
@@ -629,7 +492,7 @@ view.addEventListener('pointermove', e => {
   if (!stroke) return;
   for (const ev of evts) {
     const q = toDoc(ev);
-    stroke.move(q.x, q.y, pressureOf(ev, baseP));
+    stroke.move(q.x, q.y, pressureOf(ev));
   }
   // 仅请求一帧，不在此处重绘 —— 无论事件多少，每帧只绘制一次
   requestPaint();
@@ -643,7 +506,6 @@ function endStroke() {
   }
   if (hk.active) {
     hk.end();
-    settlePressureObs();     // 一笔结束才结算设备是否有压感
     if (pending) history.commit(pending);
     op('抬笔', tool, '历史 ' + history.stack.length);
     refreshThumbs();
@@ -654,7 +516,6 @@ function endStroke() {
   }
   if (!stroke) return;
   stroke.end();
-  settlePressureObs();
   if (pending) history.commit(pending);
   op('抬笔', tool, '历史 ' + history.stack.length);
   refreshThumbs();
@@ -2187,13 +2048,6 @@ window.__achi = {
   newDocument, doOpen, doSave, doExport, runCommand,
   get rotateLayer() { return rotateLayer; },
   get commitMove() { return commitMove; },
-  /* 压力判定的测试入口：pressureOf 依赖本笔的观测状态，
-   * 因此同时暴露重置函数，便于用例独立验证每一种设备情形。 */
-  pressureOf, resetPressureObs,
-  /* 设备压感判定的读写口：跨笔画学习的状态，测试需要能重置与查看 */
-  get penPressureUsable() { return penPressureUsable; },
-  set penPressureUsable(v) { penPressureUsable = v; },
-  settlePressureObs,
   /* 浮动选区：供测试与调试脚本走真实路径（拖动本身由手势层驱动） */
   liftSelection: () => liftSelection(),
   commitFloating: () => commitFloating(),
