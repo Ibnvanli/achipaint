@@ -25,20 +25,22 @@ cp native/electron/main.js /tmp/achi-electron-src/electron-main.js
 cp native/electron/preload.js /tmp/achi-electron-src/preload.js
 cp build/icon.icns /tmp/achi-electron-src/icon.icns
 rm -rf /tmp/achi-electron-src/src && cp -R src /tmp/achi-electron-src/src
-cat > /tmp/achi-electron-src/package.json <<'JSON'
+
+# 版本号只有一个来源：根目录 package.json。
+# 之前这里写死 0.1.0，导致 About 面板显示与真实版本不符。
+APP_VERSION=$(node -p "require('$ROOT/package.json').version" 2>/dev/null || echo "0.0.0")
+echo "   版本：$APP_VERSION"
+
+cat > /tmp/achi-electron-src/package.json <<JSON
 {
   "name": "achipaint",
   "productName": "AchiPaint",
-  "version": "0.1.0",
+  "version": "$APP_VERSION",
   "main": "electron-main.js",
   "description": "轻核心、边缘插件的绘画工具",
   "license": "MIT"
 }
 JSON
-
-# 版本号只认 package.json，别在两处各写一个（之前 About 面板显示 0.1.0 就是这么来的）
-APP_VERSION=$(node -p "require('$ROOT/package.json').version" 2>/dev/null || echo "0.0.0")
-echo "   版本：$APP_VERSION"
 
 echo "2/6 打包 Electron"
 cd /tmp/achi-electron-src
@@ -92,7 +94,12 @@ rm -rf "$OUT/launcher/Contents/Resources/AchiPaint.app"
 cp -R "$OUT/AchiPaint-darwin-arm64/AchiPaint.app" "$OUT/launcher/Contents/Resources/AchiPaint.app"
 
 echo "4/6 写 Info.plist"
-cat > "$OUT/launcher/Contents/Info.plist" <<'PLIST'
+# CFBundleShortVersionString 用完整版本（可含 -alpha.1 这类后缀，显示给用户看）；
+# CFBundleVersion 只允许数字与点号，因此从中提取纯数字部分。
+PLIST_SHORT="$APP_VERSION"
+PLIST_BUILD=$(printf '%s' "$APP_VERSION" | sed -E 's/^([0-9]+(\.[0-9]+)*).*/\1/')
+[ -z "$PLIST_BUILD" ] && PLIST_BUILD="0.0.0"
+cat > "$OUT/launcher/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -100,8 +107,8 @@ cat > "$OUT/launcher/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>AchiPaint</string>
 <key>CFBundleExecutable</key><string>Launcher</string>
 <key>CFBundleIdentifier</key><string>org.achipaint.launcher</string>
-<key>CFBundleVersion</key><string>0.1.0</string>
-<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleVersion</key><string>${PLIST_BUILD}</string>
+<key>CFBundleShortVersionString</key><string>${PLIST_SHORT}</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>icon</string>
 <key>NSPrincipalClass</key><string>NSApplication</string>
