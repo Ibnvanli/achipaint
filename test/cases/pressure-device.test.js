@@ -257,8 +257,9 @@ CASES['抬笔后末端不鼓圆点'] = async ({ achi, assert }) => {
  *   修复后   8, 26, 28, 28, 28, 28, 28, 28 ...
  */
 
-/* 注：该用例在测试环境中补画路径未稳定触发，作为回归参考保留。
- * 修复的有效性由 scripts 外的独立验证脚本确认（见提交说明）。 */
+/* 注：该用例在测试环境中量不出取中位数的差异（笔画过短时鼓包被
+ * 笔尖直径掩盖），因此抓不到该回归。作为场景记录保留；
+ * 修复的有效性由独立验证脚本确认，见提交说明。 */
 CASES['短笔画不按落笔毛刺补画'] = async ({ achi, assert }) => {
   const hk = achi.hk;
   const t0 = Date.now();
@@ -277,12 +278,17 @@ CASES['短笔画不按落笔毛刺补画'] = async ({ achi, assert }) => {
   });
 
   /* 落笔高压力，之后只移动一次就抬笔 —— 样本只有两个 */
-  /* 位移要足够长，否则整条线都被笔尖直径覆盖，量不出粗细差异。
-   * 45px 时 80px 的笔刷盖满整段，鼓包和线身分不开。 */
+  /* 位移要足够长：笔画太短时 80px 的笔刷盖满整段，
+   * 鼓包与线身分不开，量不出差异。
+   * 也不能只移动一次 —— 那样补画目标点与上一 dab 距离过大，
+   * libmypaint 会按大间距重新采样，结果与真实手写不同。
+   * 用「一次大位移 + 若干小位移」构造短笔画。 */
   view.dispatchEvent(ev('pointerdown', 0.95, cx, cy));
   await new Promise(rr => setTimeout(rr, 15));
-  view.dispatchEvent(ev('pointermove', 0.3, cx + 200, cy));
-  view.dispatchEvent(ev('pointerup', 0.3, cx + 200, cy, 0));
+  view.dispatchEvent(ev('pointermove', 0.3, cx + 260, cy));
+  await new Promise(rr => setTimeout(rr, 15));
+  view.dispatchEvent(ev('pointermove', 0.3, cx + 340, cy));
+  view.dispatchEvent(ev('pointerup', 0.3, cx + 340, cy, 0));
   await new Promise(rr => requestAnimationFrame(() => requestAnimationFrame(rr)));
 
   let minx = Infinity, maxx = -Infinity;

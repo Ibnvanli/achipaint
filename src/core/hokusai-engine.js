@@ -44,10 +44,17 @@ function srgbToLinear(c) {
   return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
 }
 
-/* .myb 中的曲线：[[输入, 输出], ...]，采用线性插值。 */
-/* 是否允许「空笔画补点」。见 end() 中的说明，当前关闭。 */
-const DOT_ON_EMPTY_STROKE = false;
+/* 是否允许「空笔画补点」。
+ *
+ * 让「点一下不移动」也能留下一个点：多数 .myb 按走过的距离采样，
+ * 指针不动时不会落任何 dab。
+ *
+ * 曾因误判成空笔画而补出大圆，一度整体关闭。真正的根因是 brush.myb
+ * 的半径压力曲线被改得过于平缓（p=0 时已有 46% 半径），任何低压力
+ * dab 都会鼓包；曲线修正后补点恢复启用。 */
+const DOT_ON_EMPTY_STROKE = true;
 
+/* .myb 中的曲线：[[输入, 输出], ...]，采用线性插值。 */
 function curveValue(points, x) {
   if (!points || !points.length) return 0;
   if (x <= points[0][0]) return points[0][1];
@@ -92,7 +99,6 @@ export class HokusaiEngine {
      * 若用最后一个压力（常常是抬笔前的峰值），那一整段就会突然变粗，
      * 形成末端的大圆点。用中位数补画，单个尖峰影响不到结果。 */
     this._pBuf = [];
-    this._pBufLen = 0;
     /* 本笔是否真的落下过 dab。由 wasm 的 strokeTo 返回值累积，
      * 不能用 paintedTiles 判断 —— 后者靠每帧 pump() 累加，快速笔画
      * 可能一次都没 pump 到，于是被误判成「什么都没画」，
@@ -213,7 +219,6 @@ export class HokusaiEngine {
     this.paintedTiles = 0;
     this._dabbed = false;
     this._pBuf = [pressure];
-    this._pBufLen = 1;
 
     /* 首次 strokeTo 仅播种状态，不落笔（libmypaint 的行为）。
      *
@@ -245,10 +250,9 @@ export class HokusaiEngine {
     if (Math.hypot(x - this.startX, y - this.startY) > 1.5) this.moved = true;
     this.lastX = x; this.lastY = y; this.lastPressure = pressure;
 
-    /* 记入环形缓冲（保留最近 5 个） */
-    if (this._pBuf.length < 5) this._pBuf.push(pressure);
-    else { this._pBuf[this._pBufLen % 5] = pressure; }
-    this._pBufLen++;
+    /* 记录最近 5 次压力，供抬笔时取中位数补画。 */
+    this._pBuf.push(pressure);
+    if (this._pBuf.length > 5) this._pBuf.shift();
 
     if (this.canvas.strokeTo(this.current, p.x, p.y, pressure,
       opts.tiltX || 0, opts.tiltY || 0, dt)) this._dabbed = true;
@@ -269,18 +273,15 @@ export class HokusaiEngine {
 
     /* 先把稳定器积压的位移补完，再冲刷 slow_tracking 尾巴。
      *
-     * 稳定器会让落笔点滞后于笔尖，抬笔时这段滞后会一次补画。若直接用
-     * 最后一个压力（抬笔前常见峰值）补画，末端会突然鼓成一个圆点。
-     * 这里用近期压力均值补到真实笔尖位置，粗细才与线身连贯。 */
+     * 稳定器让落笔点滞后于笔尖，抬笔时这段滞后会被一次补画。补画若用
+     * 抬笔瞬间的压力（常是读数峰值），末端会鼓成一个圆点。
+     * 改用近期压力的中位数，粗细才与线身连贯。
+     *
+     * 取样细节：_pBuf 的第一个元素是落笔压力，常是读数毛刺（笔尖刚接触
+     * 板面时偏高）。只有两个样本时，floor(n/2) 取到的正是较大的那个，
+     * 于是「落笔后只移动一次就抬笔」的短笔画会被按峰值补画，开头鼓成
+     * 76px 的大圆。改用 floor((n-1)/2)：偶数长度取偏小的，让毛刺落选。 */
     if (this.moved) {
-      /* 取中位数，且样本少时偏向「更接近当前笔尖位置的那一侧」。
-       *
-       * 关键：_pBuf 的第一个元素是落笔压力，常是读数毛刺（笔尖刚接触
-       * 板面时偏高）。只有两个样本时，sorted[floor(2/2)] = sorted[1]
-       * 取到的正是较大的那个 —— 短笔画（落笔后只移动一两次就抬笔）
-       * 会被按落笔峰值补画，开头鼓成一个 76px 的大圆。
-       *
-       * 因此奇数长度取正中；偶数长度取偏小的那个，让毛刺落选。 */
       const sorted = [...this._pBuf].sort((a, b) => a - b);
       const median = sorted[Math.floor((sorted.length - 1) / 2)];
       this.canvas.strokeTo(this.current, this.lastX, this.lastY, median,
@@ -290,29 +291,18 @@ export class HokusaiEngine {
     if (this.canvas.finishStroke(this.current)) this._dabbed = true;
     this.pump();
 
-    // 单次点击也应产生一个点。多数 .myb 按「走过的距离」采样，
-    // 指针不动时不会落任何点；dabs_per_second 为 0 的笔刷则完全无响应。
-    //
-    // 这里的位移只用于「让按距离采样的笔刷认为走过了一小步」，越小越好。
-    // 曾用 r * 0.55（半径的 55%），半径 40px 时点的中心会偏出点击位置 22px ——
-    // 表现为落笔处莫名多出一个偏离笔尖的墨点。
-    //
-    // 判据用 _dabbed（wasm 如实回报是否落过 dab），不再是 paintedTiles。
-    // paintedTiles 靠 pump() 累加，快速笔画可能一次都没 pump 到，会误判成
-    // 「什么都没画」，于是抬笔时补一个点 —— 用当时的压力，压力高就是一个大圆。
-    /* 补点已禁用（DOT_ON_EMPTY_STROKE = false）。
+    /* 空笔画补点：让「点一下不移动」也能留下一个点。
      *
-     * 这段逻辑是为了让「点一下不移动」也能留下一个点：多数 .myb 按走过的
-     * 距离采样，指针不动时不会落任何 dab。
+     * 多数 .myb 按走过的距离采样，指针不动时不会落任何 dab，
+     * 因此纯点按需要一个补偿。
      *
-     * 但它在实际使用中持续制造问题：快速笔画可能没被 pump() 计到，
-     * 判据把它当成空笔画，于是在抬笔位置补一个满压力的大点；
-     * 表现为笔画末端（或起点附近）多出一个圆点／菱形块。
-     * 先后换过判据（paintedTiles → wasm 落墨回报）、压过压力上限，
-     * 都只能缩小它、不能根除。
+     * 判据用 _dabbed（wasm 如实回报是否落过 dab），不用 paintedTiles ——
+     * 后者靠每帧 pump() 累加，快速笔画可能一次都没 pump 到，
+     * 会被误判成空笔画，于是在抬笔位置补出一个满压力的大点。
      *
-     * 现在整体关掉：画出来的东西严格等于「笔尖真正走过的路径」。
-     * 代价是纯点按不再留下墨点 —— 需要点的场合，按下后移动一点点即可。 */
+     * 位移只用于「让按距离采样的笔刷认为走过了一小步」，越小越好：
+     * 曾用 r * 0.55（半径的 55%），半径 40px 时点的中心偏出点击位置 22px，
+     * 表现为落笔处莫名多出一个偏离笔尖的墨点。 */
     if (DOT_ON_EMPTY_STROKE && !this._dabbed) {
       const nudge = Math.min(1, this.radiusPx * 0.02);
       this.canvas.strokeTo(this.current, this.lastX + nudge, this.lastY,
