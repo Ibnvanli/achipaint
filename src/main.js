@@ -1912,10 +1912,36 @@ window.__achi = {
 
   async selfTestRoundtrip() {
     const blob = await serialize(doc, { app: VERSION });
-    const before = [doc.w, doc.h];
     const { doc: back } = await parse(await blob.arrayBuffer());
-    const ok = back.w === before[0] && back.h === before[1];
-    return `${blob.size} 字节 · ${before.join('×')} → ${back.w}×${back.h} ${ok ? '一致' : '不一致！'}`;
+
+    const sizeOk = back.w === doc.w && back.h === doc.h;
+
+    /* 只比尺寸等于没测：旧格式那个 bug 就是「尺寸对、像素错」。
+     * 这里逐瓦片比 alpha 和颜色，任何一处不同都算失败。 */
+    const leaves0 = [], leaves1 = [];
+    const w0 = ns => ns.forEach(n => (n.isGroup ? w0(n.children) : leaves0.push(n)));
+    const w1 = ns => ns.forEach(n => (n.isGroup ? w1(n.children) : leaves1.push(n)));
+    w0(doc.root.children);
+    w1(back.root.children);
+
+    let diff = 0, tiles = 0;
+    for (let i = 0; i < leaves0.length; i++) {
+      const a = leaves0[i], b = leaves1[i];
+      if (!b) { diff++; continue; }
+      for (const [k, t] of a.canvas.tiles) {
+        const tb = b.canvas.tiles.get(k);
+        if (!tb) continue;                       // 空块本来就不存
+        tiles++;
+        const da = t.ctx.getImageData(0, 0, 256, 256).data;
+        const db = tb.ctx.getImageData(0, 0, 256, 256).data;
+        for (let j = 0; j < da.length; j += 4) {
+          if (da[j] !== db[j] || da[j + 3] !== db[j + 3]) { diff++; break; }
+        }
+      }
+    }
+
+    const ok = sizeOk && diff === 0;
+    return `${blob.size} 字节 · ${doc.w}×${doc.h} · ${tiles} 块瓦片 · ` + (ok ? '像素一致' : `有 ${diff} 处不一致！`);
   },
 };
 

@@ -1,20 +1,19 @@
-/* Achi 文件格式（.achi）
+/* Achi 文件格式（.achi）v2
  *
  * 设计目标只有一条：**坏文件不能把当前画布搞坏，也不能静悄悄加载一半**。
  * 所以格式自带三层校验，任何一层不过就整体拒绝：
  *
  *   1. 结构校验：magic、版本、每个块的偏移和长度都必须在边界内
  *   2. CRC32    ：覆盖 magic 之后的全部字节
- *   3. 语义校验：JSON 能解析、图层树能重建、每个块都真的被引用到
+ *   3. 语义校验：JSON 能解析、图层树能重建、每块都被引用到、瓦片坐标不重复
  *
  * 读取时先完整解到一个新的 Doc 对象，全部成功之后才交给调用方去替换。
- * 中途抛异常 = 当前文档原封不动。
  *
  *
  * 文件布局（全部小端）
  * ─────────────────────────────────────────────
  *   0    magic          "ACHI"          4 B
- *   4    formatVersion  u16             2 B
+ *   4    formatVersion  u16             2 B（当前 2）
  *   6    flags          u16             2 B（保留，必须为 0）
  *   8    headerLen      u32             4 B
  *   12   header         UTF-8 JSON      变长
@@ -22,14 +21,20 @@
  *          nameLen  u16
  *          name     UTF-8            （唯一，不能重名）
  *          dataLen  u32
- *          data     PNG
+ *          data     PNG              256×256 一块瓦片
  *   末尾 crc32          u32             4 B，覆盖 [0, 末尾-4)
  * ─────────────────────────────────────────────
+ *
+ * v2 相对 v1 的变化：**按瓦片存，不再整层存一张大图**。
+ * 一个 A4 文档有 140 块瓦片，画几笔通常只有十几块真有笔迹，
+ * 只存这些能把文件压到原来的几十分之一；空瓦片不落盘。
+ * header 里每层带 tiles: [{c, r, data}] 记录有内容的块。
+ *
  */
 import { Doc, Layer, LayerGroup, TileCanvas, TILE } from './canvas.js';
 
 export const MAGIC = 'ACHI';
-export const FORMAT_VERSION = 1;
+export const FORMAT_VERSION = 2;
 export const EXTENSION = '.achi';
 export const MIME = 'application/x-achipaint';
 
@@ -65,23 +70,24 @@ export class AchiFileError extends Error {
 
 /* ---------- 写 ---------- */
 
-/* 把一个 TileCanvas 拍平成 PNG。
- * 整层一张图，而不是一瓦片一张 —— 文件少、通用工具能打开、好排查。 */
-async function tileCanvasToPng(tc) {
-  const cv = document.createElement('canvas');
-  cv.width = tc.w;
-  cv.height = tc.h;
-  const ctx = cv.getContext('2d');
-  for (const t of tc.tiles.values()) {
-    ctx.drawImage(t.canvas, t.col * TILE, t.row * TILE);
-  }
+/* 一块瓦片有没有内容。全透明就不存 —— A4 有 140 块，通常只有十几块真有笔迹。 */
+function tileHasInk(tile) {
+  const w = tile.canvas.width, h = tile.canvas.height;
+  const d = tile.ctx.getImageData(0, 0, w, h).data;
+  for (let i = 3; i < d.length; i += 4) if (d[i] !== 0) return true;
+  return false;
+}
+
+/* 单块导出成 PNG。尺寸就是这块瓦片的实际尺寸（边缘块可能小于 256）。 */
+async function tileToPng(tile) {
   const blob = await new Promise((resolve, reject) => {
-    cv.toBlob(b => (b ? resolve(b) : reject(new AchiFileError('PNG 编码失败', 'ENCODE'))), 'image/png');
+    tile.canvas.toBlob(b => (b ? resolve(b) : reject(new AchiFileError('PNG 编码失败', 'ENCODE'))), 'image/png');
   });
   return new Uint8Array(await blob.arrayBuffer());
 }
 
-function serializeNode(node, blocks) {
+/* 规划阶段：只产出 header 结构和「块名 → 瓦片」的映射，不做编码。 */
+function planNode(node, plan) {
   const out = {
     type: node.isGroup ? 'group' : 'layer',
     name: node.name,
@@ -92,22 +98,28 @@ function serializeNode(node, blocks) {
 
   if (node.isGroup) {
     out.expanded = !!node.expanded;
-    out.children = node.children.map(c => serializeNode(c, blocks));
+    out.children = node.children.map(c => planNode(c, plan));
     return out;
   }
 
-  out.data = blockName('layer');
-  blocks.set(out.data, node.canvas);
+  out.tiles = planTiles(node.canvas, plan);
   if (node.mask && node.mask.tiles.size) {
-    out.mask = blockName('mask');
-    blocks.set(out.mask, node.mask);
+    out.mask = { tiles: planTiles(node.mask, plan) };
   }
   return out;
 }
 
-let blockSeq = 0;
-function blockName(kind) {
-  return `${kind}-${blockSeq++}.png`;
+/* 收集某层的非空瓦片，给每块分配一个块名。 */
+function planTiles(tc, plan) {
+  const list = [];
+  for (const [key, tile] of tc.tiles) {
+    if (!tileHasInk(tile)) continue;          // 空块不存
+    const [c, r] = key.split(',').map(Number);
+    const name = 't' + plan.length;
+    plan.push([name, tile]);
+    list.push({ c, r, data: name });
+  }
+  return list;
 }
 
 /**
@@ -117,38 +129,37 @@ function blockName(kind) {
  * @returns {Promise<Blob>}
  */
 export async function serialize(doc, extra = {}) {
-  blockSeq = 0;
-  const blocks = new Map();
-
+  const plan = [];                       // [[块名, tile], ...]
   const header = {
     format: 'achipaint',
     version: FORMAT_VERSION,
-    app: extra.app || '0.1.0',   // 兜底，实际由调用方传
+    app: extra.app || '0.0.0',
     created: new Date().toISOString(),
     doc: { w: doc.w, h: doc.h, background: doc.background || 'white' },
     view: { x: doc.view.x, y: doc.view.y, zoom: doc.view.zoom },
     brush: extra.brush || null,
-    layers: doc.root.children.map(n => serializeNode(n, blocks)),
+    layers: doc.root.children.map(n => planNode(n, plan)),
   };
 
   const headerBytes = new TextEncoder().encode(JSON.stringify(header));
 
-  /* 先把所有块的字节算出来，才能知道总长度 */
-  const encoded = new Map();
-  for (const [name, tc] of blocks) {
-    encoded.set(name, await tileCanvasToPng(tc));
+  /* 只编码真正有笔迹的瓦片；空图层产出的 plan 是空表。 */
+  const encoded = [];
+  for (const [name, tile] of plan) {
+    encoded.push([name, await tileToPng(tile)]);
   }
 
+  const enc = new TextEncoder();
   let total = 12 + headerBytes.length + 4;
   for (const [name, data] of encoded) {
-    total += 2 + new TextEncoder().encode(name).length + 4 + data.length;
+    total += 2 + enc.encode(name).length + 4 + data.length;
   }
 
   const out = new Uint8Array(total);
   const view = new DataView(out.buffer);
   let p = 0;
 
-  out.set(new TextEncoder().encode(MAGIC), 0);
+  out.set(enc.encode(MAGIC), 0);
   p = 4;
   view.setUint16(p, FORMAT_VERSION, true); p += 2;
   view.setUint16(p, 0, true); p += 2;
@@ -156,7 +167,7 @@ export async function serialize(doc, extra = {}) {
   out.set(headerBytes, p); p += headerBytes.length;
 
   for (const [name, data] of encoded) {
-    const nb = new TextEncoder().encode(name);
+    const nb = enc.encode(name);
     view.setUint16(p, nb.length, true); p += 2;
     out.set(nb, p); p += nb.length;
     view.setUint32(p, data.length, true); p += 4;
@@ -170,7 +181,24 @@ export async function serialize(doc, extra = {}) {
 
 /* ---------- 读 ---------- */
 
-async function pngToTileCanvas(bytes, w, h, label) {
+/* 解一块瓦片 PNG 并贴回对应坐标。尺寸必须和该块应有的尺寸一致。 */
+async function fillTiles(tc, list, blocks, docW, docH, label) {
+  for (const e of list) {
+    const { bmp, c, r, tw, th } = await pngToTile(blocks.get(e.data), e.c | 0, e.r | 0, docW, docH, label);
+    const tile = tc.tile(c, r);
+    // 只贴有效区域：边缘块右/下超出的部分是空的，不用画
+    tile.ctx.drawImage(bmp, 0, 0, tw, th, 0, 0, tw, th);
+    bmp.close?.();
+  }
+}
+
+async function pngToTile(bytes, c, r, docW, docH, label) {
+  const tw = Math.min(TILE, docW - c * TILE);
+  const th = Math.min(TILE, docH - r * TILE);
+  if (tw <= 0 || th <= 0) {
+    throw new AchiFileError(`数据块 "${label}" 的坐标越界：(${c}, ${r})`, 'BAD_BLOCK');
+  }
+
   const blob = new Blob([bytes], { type: 'image/png' });
   let bmp;
   try {
@@ -178,28 +206,34 @@ async function pngToTileCanvas(bytes, w, h, label) {
   } catch (e) {
     throw new AchiFileError(`数据块 "${label}" 不是有效的 PNG`, 'BAD_BLOCK');
   }
-  if (bmp.width !== w || bmp.height !== h) {
+  /* 瓦片 canvas 统一 256×256（边缘块超出文档的部分留空），
+   * 所以这里校验固定尺寸，贴回时再按有效区域 tw×th 裁剪。 */
+  if (bmp.width !== TILE || bmp.height !== TILE) {
     throw new AchiFileError(
-      `数据块 "${label}" 尺寸不符：期望 ${w}×${h}，实际 ${bmp.width}×${bmp.height}`, 'BAD_BLOCK');
+      `数据块 "${label}" 尺寸不符：期望 ${TILE}×${TILE}，实际 ${bmp.width}×${bmp.height}`, 'BAD_BLOCK');
   }
+  return { bmp, c, r, tw, th };
+}
 
-  const tc = new TileCanvas(w, h);
-  // 整层画进去：用一张临时画布再切块
-  const cv = document.createElement('canvas');
-  cv.width = w; cv.height = h;
-  cv.getContext('2d').drawImage(bmp, 0, 0);
-  bmp.close?.();
-
-  for (let r = 0; r < tc.rows; r++) {
-    for (let c = 0; c < tc.cols; c++) {
-      const tw = Math.min(TILE, w - c * TILE);
-      const th = Math.min(TILE, h - r * TILE);
-      if (tw <= 0 || th <= 0) continue;
-      const tile = tc.tile(c, r);
-      tile.ctx.drawImage(cv, c * TILE, r * TILE, tw, th, 0, 0, tw, th);
+/* 校验图层/蒙版的瓦片清单：块要存在、坐标不能重复。 */
+function checkTiles(list, blocks, used, where) {
+  if (list === undefined) {
+    throw new AchiFileError(`图层 "${where}" 缺少 tiles`, 'BAD_TREE');
+  }
+  if (!Array.isArray(list)) {
+    throw new AchiFileError(`图层 "${where}" 的 tiles 不是数组`, 'BAD_TREE');
+  }
+  const seen = new Set();
+  for (const e of list) {
+    if (!e || !blocks.has(e.data)) {
+      throw new AchiFileError(`图层 "${where}" 引用的块不存在：${e && e.data}`, 'MISSING_BLOCK');
     }
+    const k = e.c + ',' + e.r;
+    if (seen.has(k)) throw new AchiFileError(`图层 "${where}" 瓦片坐标重复：(${e.c}, ${e.r})`, 'BAD_TREE');
+    seen.add(k);
+    used.add(e.data);
   }
-  return tc;
+  return list;
 }
 
 function buildNode(spec, docW, docH, blocks, used, path) {
@@ -226,21 +260,14 @@ function buildNode(spec, docW, docH, blocks, used, path) {
   if (spec.type !== 'layer') {
     throw new AchiFileError(`未知节点类型 "${spec.type}"（在 ${where}）`, 'BAD_TREE');
   }
-  if (!spec.data) throw new AchiFileError(`图层 "${where}" 缺少数据块引用`, 'BAD_TREE');
-  if (!blocks.has(spec.data)) throw new AchiFileError(`图层 "${where}" 引用的块不存在：${spec.data}`, 'MISSING_BLOCK');
-
   const l = new Layer(docW, docH, name);
   l.visible = spec.visible !== false;
   l.opacity = typeof spec.opacity === 'number' ? spec.opacity : 1;
   l.mode = spec.mode || 'source-over';
-  l._pendingData = spec.data;
-  used.add(spec.data);
 
-  if (spec.mask) {
-    if (!blocks.has(spec.mask)) throw new AchiFileError(`蒙版块不存在：${spec.mask}`, 'MISSING_BLOCK');
-    l._pendingMask = spec.mask;
-    used.add(spec.mask);
-  }
+  /* 瓦片清单是必需的：空图层就是空数组（合法），缺字段才算坏。 */
+  l._pendingTiles = checkTiles(spec.tiles, blocks, used, where);
+  if (spec.mask) l._pendingMaskTiles = checkTiles(spec.mask.tiles, blocks, used, where + ' 蒙版');
   return l;
 }
 
@@ -264,6 +291,12 @@ export async function parse(buffer) {
   if (version > FORMAT_VERSION) {
     throw new AchiFileError(
       `文件版本 ${version} 比本程序支持的 ${FORMAT_VERSION} 新，请升级 AchiPaint`, 'FUTURE_VERSION');
+  }
+  /* v1 是「整层存一张 PNG」的旧布局，v2 改成按瓦片存，结构不兼容。
+   * 与其让它走到 BAD_TREE 报个看不懂的错，不如直接说清楚。 */
+  if (version < 2) {
+    throw new AchiFileError(
+      `这是 AchiPaint 旧版本（v${version}）的文件，当前版本已改用新的存储格式，无法直接读取。`, 'LEGACY_FORMAT');
   }
   const flags = view.getUint16(6, true);
   if (flags !== 0) throw new AchiFileError('文件带有本程序不认识的标志位', 'BAD_FLAGS');
@@ -349,11 +382,12 @@ export async function parse(buffer) {
   walk(doc.root.children);
 
   for (const l of leaves) {
-    l.canvas = await pngToTileCanvas(blocks.get(l._pendingData), docW, docH, l.name);
-    delete l._pendingData;
-    if (l._pendingMask) {
-      l.mask = await pngToTileCanvas(blocks.get(l._pendingMask), docW, docH, l.name + ' 蒙版');
-      delete l._pendingMask;
+    await fillTiles(l.canvas, l._pendingTiles, blocks, docW, docH, l.name);
+    delete l._pendingTiles;
+    if (l._pendingMaskTiles) {
+      l.ensureMask();
+      await fillTiles(l.mask, l._pendingMaskTiles, blocks, docW, docH, l.name + ' 蒙版');
+      delete l._pendingMaskTiles;
     }
   }
 
