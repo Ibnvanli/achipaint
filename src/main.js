@@ -363,6 +363,14 @@ view.addEventListener('pointerdown', e => {
   // 脚本合成的 PointerEvent 没有真实 pointer 可捕获，会抛出 NotFoundError。
   // 即使在真机上捕获失败，也不应中断整个落笔流程。
   try { view.setPointerCapture(e.pointerId); } catch { /* 合成事件或已释放 */ }
+
+  /* 上一笔若还没结束，先正常收尾。
+   *
+   * 指针在窗口外松开时 pointerup 可能收不到，笔画会一直挂在 overlay 上。
+   * 此时再按下，hk.begin() 会清空 overlay —— 上一笔的内容就永久丢了，
+   * 表现就是「再次点击画布，上一轮越出窗口的笔画被覆盖掉」。 */
+  if (hk.active || stroke || gesture) endStroke();
+
   const p = toDoc(e);
   resetPressureObs();
   const pressure = pressureOf(e);
@@ -522,6 +530,18 @@ function syncBrushControls() {
 
 view.addEventListener('pointermove', e => {
   lastPointerAt = performance.now();
+
+  /* 指针已经离开窗口：结束当前笔画。
+   *
+   * 指针捕获会让窗口外的移动继续派发事件，若不停笔，鼠标从窗口外绕回来时
+   * 会和离开点连成一条直线划在画布上。超出窗口的部分本就不该产生笔迹，
+   * 因此直接收笔；回到窗口后需要重新按下才能继续画。 */
+  if (e.clientX < 0 || e.clientY < 0
+    || e.clientX > window.innerWidth || e.clientY > window.innerHeight) {
+    if (hk.active || stroke || gesture) endStroke();
+    return;
+  }
+
   const p = toDoc(e);
   $('st-pos').textContent = Math.round(p.x) + ', ' + Math.round(p.y);
 
@@ -588,6 +608,15 @@ function endStroke() {
 
 view.addEventListener('pointerup', endStroke);
 view.addEventListener('pointercancel', endStroke);
+
+/* 兜底：指针在窗口外松开、或用 Alt+Tab 切走时，view 上的 pointerup 收不到。
+ * 笔画若一直挂着不结束，下一笔的 begin 会清掉 overlay 里的内容。 */
+const finishStrokeIfAny = () => {
+  if (hk.active || stroke || gesture) endStroke();
+};
+window.addEventListener('pointerup', finishStrokeIfAny);
+window.addEventListener('pointercancel', finishStrokeIfAny);
+window.addEventListener('blur', finishStrokeIfAny);
 
 /* ---------- 参考图窗 ----------
  * 在侧边固定一张图片作为参考。支持拖动、缩放与替换。
