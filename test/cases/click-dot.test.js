@@ -1,59 +1,66 @@
-/* 单击落点位置
+/* 空笔画不补点
  *
- * 缺陷来源：画笔引擎在「这一笔没画出任何东西」时会补一个点，
- * 让按距离采样的 .myb 笔刷也能响应单击。
+ * 历史上画笔引擎有一段「补点」逻辑：这一笔什么都没画出来时，在抬笔位置
+ * 补一个 dab，让「点一下不移动」也能留下一个点（多数 .myb 按走过的距离
+ * 采样，指针不动时不会落任何 dab）。
  *
- * 补点位置写的是 lastX + radius * 0.55 —— 半径的 55%。
- * 半径 40px 时点会偏出点击位置 22px，表现为落笔处莫名多出一个
- * 偏离笔尖的墨点。实测点击 (200,300)，墨迹中心落在 (210,300)。
+ * 但它在实际使用中持续制造问题：快速笔画可能没被 pump() 计到，判据把它
+ * 当成空笔画，于是补出一个满压力的大点，表现为笔画末端或起点附近多出
+ * 一个圆点／菱形块。先后换过判据（paintedTiles → wasm 落墨回报）、
+ * 压过补点压力上限，都只能缩小它、不能根除。
  *
- * 位移的真实用途只是「让按距离采样的笔刷认为走过了一小步」，
- * 1px 就够，没有必要挪半个半径。
+ * 现在整体关闭（DOT_ON_EMPTY_STROKE = false）：
+ * 画出来的东西严格等于「笔尖真正走过的路径」。
+ * 代价是纯点按不再留下墨点 —— 需要点的场合，按下后移动一点点即可。
  */
 
+/* 统计图层的墨点数 */
+function inkCount(layer) {
+  let n = 0;
+  for (const t of layer.tiles.values()) {
+    const d = t.ctx.getImageData(0, 0, 256, 256).data;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 8) n++;
+  }
+  return n;
+}
+
 const CASES = {
-  /* 单击产生的点必须落在点击位置 */
-  '单击点不偏离点击位置': async ({ achi, assert }) => {
+  /* 纯点按（按下即抬起，没有移动）不应留下墨点 */
+  '纯点按不产生墨点': async ({ achi, assertEq }) => {
     const hk = achi.hk;
-    if (!hk.ready) {
-      const t0 = Date.now();
-      while (!hk.ready && Date.now() - t0 < 10000) {
-        await new Promise(r => setTimeout(r, 100));
-      }
+    const t0 = Date.now();
+    while (!hk.ready && Date.now() - t0 < 10000) {
+      await new Promise(r => setTimeout(r, 100));
     }
-    assert(hk.ready, 'hokusai 引擎应已就绪');
+    assertEq(hk.ready, true, 'hokusai 引擎应已就绪');
 
-    const doc = achi.doc;
-    const layer = doc.activeLeaf.canvas;
-    const CLICK = { x: 200, y: 300 };
+    const layer = achi.doc.activeLeaf.canvas;
+    const before = inkCount(layer);
 
-    hk.begin(CLICK.x, CLICK.y, 1.0, { size: 80, color: '#000000', opacity: 1 });
+    hk.begin(200, 300, 1.0, { size: 80, color: '#000000', opacity: 1 });
     hk.end();
     hk.flush();
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
-    let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
-    for (const t of layer.tiles.values()) {
-      const d = t.ctx.getImageData(0, 0, 256, 256).data;
-      for (let y = 0; y < 256; y++) {
-        for (let x = 0; x < 256; x++) {
-          if (d[(y * 256 + x) * 4 + 3] <= 10) continue;
-          const wx = t.col * 256 + x, wy = t.row * 256 + y;
-          if (wx < minx) minx = wx;
-          if (wx > maxx) maxx = wx;
-          if (wy < miny) miny = wy;
-          if (wy > maxy) maxy = wy;
-        }
-      }
-    }
+    assertEq(inkCount(layer) - before, 0, '纯点按不应补出墨点');
+  },
 
-    assert(maxx > minx, '单击应画出可见的墨点');
+  /* 拖一点点就应正常出笔画 —— 确认关掉补点没有伤到正常绘制 */
+  '轻微拖动即有笔画': async ({ achi, assert }) => {
+    const hk = achi.hk;
+    if (!hk.ready) return;
 
-    const cx = (minx + maxx) / 2;
-    const cy = (miny + maxy) / 2;
-    assert(Math.abs(cx - CLICK.x) <= 3,
-      `墨点应落在点击位置，水平偏移 ${(cx - CLICK.x).toFixed(1)}px`);
-    assert(Math.abs(cy - CLICK.y) <= 3,
-      `墨点应落在点击位置，垂直偏移 ${(cy - CLICK.y).toFixed(1)}px`);
+    const layer = achi.doc.activeLeaf.canvas;
+    const before = inkCount(layer);
+
+    hk.begin(200, 400, 1.0, { size: 80, color: '#000000', opacity: 1 });
+    hk.lastT = performance.now() / 1000;
+    hk.move(200, 460, 1.0, {});          // 只移动 60px
+    hk.end();
+    hk.flush();
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    const after = inkCount(layer) - before;
+    assert(after > 0, `轻微拖动应画出笔画，实际墨点 ${after}`);
   },
 };

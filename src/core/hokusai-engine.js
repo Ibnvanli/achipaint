@@ -45,6 +45,9 @@ function srgbToLinear(c) {
 }
 
 /* .myb 中的曲线：[[输入, 输出], ...]，采用线性插值。 */
+/* 是否允许「空笔画补点」。见 end() 中的说明，当前关闭。 */
+const DOT_ON_EMPTY_STROKE = false;
+
 function curveValue(points, x) {
   if (!points || !points.length) return 0;
   if (x <= points[0][0]) return points[0][1];
@@ -289,11 +292,21 @@ export class HokusaiEngine {
     // 判据用 _dabbed（wasm 如实回报是否落过 dab），不再是 paintedTiles。
     // paintedTiles 靠 pump() 累加，快速笔画可能一次都没 pump 到，会误判成
     // 「什么都没画」，于是抬笔时补一个点 —— 用当时的压力，压力高就是一个大圆。
-    if (!this._dabbed) {
+    /* 补点已禁用（DOT_ON_EMPTY_STROKE = false）。
+     *
+     * 这段逻辑是为了让「点一下不移动」也能留下一个点：多数 .myb 按走过的
+     * 距离采样，指针不动时不会落任何 dab。
+     *
+     * 但它在实际使用中持续制造问题：快速笔画可能没被 pump() 计到，
+     * 判据把它当成空笔画，于是在抬笔位置补一个满压力的大点；
+     * 表现为笔画末端（或起点附近）多出一个圆点／菱形块。
+     * 先后换过判据（paintedTiles → wasm 落墨回报）、压过压力上限，
+     * 都只能缩小它、不能根除。
+     *
+     * 现在整体关掉：画出来的东西严格等于「笔尖真正走过的路径」。
+     * 代价是纯点按不再留下墨点 —— 需要点的场合，按下后移动一点点即可。 */
+    if (DOT_ON_EMPTY_STROKE && !this._dabbed) {
       const nudge = Math.min(1, this.radiusPx * 0.02);
-      /* 这里用 lastPressure：真单击时它就是用户按下的力度，应当如实反映。
-       * 抬笔压力偏高只在「已经画了东西」的情况下才是干扰，
-       * 那种情况走的是上面的滞后补画，判据不同。 */
       this.canvas.strokeTo(this.current, this.lastX + nudge, this.lastY,
         this.lastPressure, 0, 0, 0.016);
       this.canvas.finishStroke(this.current);
