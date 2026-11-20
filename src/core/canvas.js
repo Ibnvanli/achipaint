@@ -176,7 +176,6 @@ export class Doc {
 
     this.selected = bg;      // 面板里高亮的那一行，可以是组
     this.activeLeaf = bg;    // 画笔真正落到的图层，一定是叶子
-    this._seq = 1;
 
     this.view = { x: 0, y: 0, zoom: 1 };
 
@@ -223,12 +222,37 @@ export class Doc {
     return node;
   }
 
+  /* 按「前缀 + 序号」生成默认名称，序号取当前**最小的未使用值**。
+   *
+   * 不能沿用自增计数器：删除图层后计数器不回退，新建时就会跳过被删掉的号，
+   * 表现为 8、6、5 这样的断号，看不出到底还有没有第 7 层。
+   *
+   * 这里改为扫描现有名称，复用最小的空号。被用户改过名的节点不占用编号
+   * （只有严格符合「前缀 + 空格 + 数字」的才计入），因此自定义命名不受影响。
+   */
+  nextName(prefix) {
+    const used = new Set();
+    const re = new RegExp('^' + prefix + ' (\\d+)$');
+    const walk = nodes => {
+      for (const n of nodes) {
+        const m = re.exec(n.name || '');
+        if (m) used.add(Number(m[1]));
+        if (n.isGroup) walk(n.children);
+      }
+    };
+    walk(this.root.children);
+
+    let i = 1;
+    while (used.has(i)) i++;
+    return prefix + ' ' + i;
+  }
+
   /* 新建图层：插入到选中项上方（同一层级）；若选中的是组，则插入该组最上层 */
   addLayer() {
     const sel = this.selected || this.root;
     const parent = sel.isGroup ? sel : (sel.parent || this.root);
     const index = sel.isGroup ? 0 : Math.max(0, parent.children.indexOf(sel));
-    const l = new Layer(this.w, this.h, '图层 ' + (++this._seq));
+    const l = new Layer(this.w, this.h, this.nextName('图层'));
     l.parent = parent;
     parent.children.splice(index, 0, l);
     this.select(l);
@@ -241,7 +265,7 @@ export class Doc {
     const sel = this.selected || this.root;
     if (sel.isGroup) {
       const parent = sel.parent || this.root;
-      const g = new LayerGroup('组 ' + (++this._seq));
+      const g = new LayerGroup(this.nextName('组'));
       g.parent = parent;
       parent.children.splice(Math.max(0, parent.children.indexOf(sel)), 0, g);
       this.select(g);
@@ -249,7 +273,7 @@ export class Doc {
     }
     const parent = sel.parent || this.root;
     const index = Math.max(0, parent.children.indexOf(sel));
-    const g = new LayerGroup('组 ' + (++this._seq));
+    const g = new LayerGroup(this.nextName('组'));
     g.parent = parent;
     // 先将组放到图层原位置，再把图层移入该组
     parent.children.splice(index, 0, g);
