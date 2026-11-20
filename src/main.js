@@ -106,7 +106,7 @@ function checkerPattern(ctx) {
 
 /* 性能探针：记录每帧合成耗时，以及「最近一次指针事件到该帧绘制完成」的间隔。
  *
- * 数据同时供开发者控制台的「性能」页使用，因此默认开启。
+ * 数据供开发者控制台的「性能」页使用，因此默认开启。
  * 记录本身是每帧一次的对象分配 + 一次数组 push，开销可忽略；
  * 真正的成本在读取侧（getImageData 之类），不在这里。
  *
@@ -2531,19 +2531,34 @@ const consoleBus = (() => {
   try { return new BroadcastChannel('achi-console'); } catch { return null; }
 })();
 
-/* 控制台快照。
- *
- * 控制台只保留日志视图，因此这里仅发送日志。
- * 此前还附带性能样本、图层树、历史与最近文件 —— 那些数据曾供「性能 / 文档 / 操作」
- * 三个页签使用，页签移除后即是无人消费的负载：每次 poll 都要遍历图层树、
- * 序列化数十条记录并跨窗口传输。
- *
- * 性能样本仍由 window.__achiPerf 在页面内保留，需要时在 DevTools 中直接查看。 */
 function consoleSnapshot() {
+  const perf = window.__achiPerf || [];
+  const leaves = [];
+  const walk = ns => ns.forEach(n => n.isGroup ? walk(n.children) : leaves.push(n));
+  walk(doc.root.children);
   return {
     type: 'state',
     t: Date.now(),
     logs: mainConsole.logs.slice(-300),
+    perf: perf.slice(-300).map(p => ({ gap: p.gap, inputLag: p.inputLag, frame: p.frame })),
+    heap: performance.memory ? performance.memory.usedJSHeapSize : null,
+    canvas: (() => { const c = $('view'); return c ? [c.width, c.height] : null; })(),
+    doc: {
+      w: doc.w, h: doc.h,
+      background: doc.background,
+      zoom: doc.view.zoom,
+      viewX: doc.view.x, viewY: doc.view.y,
+      selection: doc.selection,
+      active: doc.activeLeaf ? doc.activeLeaf.name : null,
+      layers: leaves.map(l => ({
+        name: l.name, visible: l.visible !== false,
+        opacity: l.opacity, mode: l.mode, tiles: l.canvas.tiles.size,
+      })),
+    },
+    history: { steps: history.stack.length, bytes: history.bytes },
+    hkReady: !!(hk && hk.ready),
+    isElectron: !!window.achiFile,
+    recents: (() => { try { return JSON.parse(localStorage.getItem('achi.recent') || '[]'); } catch { return []; } })(),
   };
 }
 

@@ -37,9 +37,10 @@ const CASES = {
     assert(gaps.length > 0, '应存在有效帧间隔');
 
     const avg = gaps.reduce((a, b) => a + b, 0) / gaps.length;
-    /* 隐藏窗口的 rAF 可能被降频，上限放宽到 1000ms；
-     * 下限 1ms —— 小于 1ms 说明时间戳算错了。 */
-    assert(avg > 1 && avg < 1000, `帧间隔均值应在 1–1000ms，实际 ${avg.toFixed(1)}ms`);
+    /* 隐藏窗口的 rAF 会被大幅降频（实测可达 1.7s/帧），因此上限放宽到 5000ms。
+     * 下限 1ms —— 小于 1ms 说明时间戳算错了。
+     * 这条用例的目的是确认数值有量级、不是 0 或 NaN，而非测性能。 */
+    assert(avg > 1 && avg < 5000, `帧间隔均值应在 1–5000ms，实际 ${avg.toFixed(1)}ms`);
   },
 
   /* 探针可被关闭，关闭后不再增长 */
