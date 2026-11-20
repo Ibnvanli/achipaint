@@ -303,51 +303,92 @@ function pressureVaries() {
   return pressureObs.n < 3 || (pressureObs.max - pressureObs.min) > 0.01;
 }
 
-function pressureOf(e) {
-  const p = typeof e.pressure === 'number' ? e.pressure : 0.5;
+function pressureOf(e, fallback = null) {
+  /* 取用压力值。三层兜底，顺序不能乱：
+   *   1) 事件自身的 pressure（有压感设备在多数浏览器里的正常情况）
+   *   2) 调用方给的兜底值 —— 合并事件不完整时，用原始事件的值补上
+   *      （Safari 的 getCoalescedEvents() 返回的事件 pressure 常为 0）
+   *   3) 0.5 —— 仍无数据时按规范占位值处理，交由下面的判定决定去留
+   */
+  let p = typeof e.pressure === 'number' ? e.pressure : 0;
+  if (!(p > 0) && typeof fallback === 'number' && fallback > 0) p = fallback;
+  const valid = p > 0;
+  if (!valid) p = 0.5;
 
   pressureObs.min = Math.min(pressureObs.min, p);
   pressureObs.max = Math.max(pressureObs.max, p);
   pressureObs.n++;
 
-  /* 浏览器未提供有效压力时，规范要求报 0.5（按钮按下）或 0（悬停）。
-   * 这两种都不携带画者意图，直接按满压。 */
-  if (!(p > 0)) return pressureVaries() ? 0.5 : 1;
-
   if (e.pointerType === 'pen') {
-    /* pen 但压力恒定 = 占了 pen 的名义却没给数据（见上方注释）。
-     * 样本足够后判定为无压感，改用满压，避免整笔都是细线。 */
-    if (!pressureVaries()) return 1;
+    /* pen 分支：先看压力是否真的在变。
+     * 「名义上是 pen」不等于「真的给了压力数据」—— 有的驱动只报 0.5。
+     * 恒定 0.5 在 .myb 的 radius 曲线上只对应 -0.35，直径缩减一半以上，
+     * 看起来就是没有压感。这种情况按满压画，至少不是一根发丝。 */
+    if (!valid || !pressureVaries()) return 1;
     return p;
   }
 
-  /* 非 pen 设备：只要压力不在 0.5 这个占位值上，说明设备确实有压感。 */
-  if (p !== 0.5 && p < 1) return p;
-  return 1;
+  /* 非 pen 设备：鼠标的 pressure 恒为 0.5，是占位值不是真实压力。
+   * 但只要不在 0.5 上，就说明设备确实在报压感（部分浏览器把数位板报成 mouse）。 */
+  if (!valid || p === 0.5) return 1;
+  return p;
 }
+
 
 /* 诊断入口：在网页版里执行 `__achiPointerProbe()` 后画一笔，
  * 控制台会打印浏览器实际报告的指针类型与压力，便于确认压感缺失出在哪一环。 */
 window.__achiPointerProbe = function () {
   const v = document.getElementById('view');
   const rows = [];
-  const rec = e => rows.push({
-    type: e.pointerType, pressure: +e.pressure.toFixed(3),
-    buttons: e.buttons, tiltX: e.tiltX, tiltY: e.tiltY,
-  });
+  const rec = e => {
+    /* 同时记录原始事件与合并事件的压力。
+     * 两者不一致通常意味着浏览器的 getCoalescedEvents() 实现不完整 ——
+     * Safari 就是这种情况：合并事件的 pressure 为 0，而原始事件有真实值。 */
+    let co = null;
+    if (typeof e.getCoalescedEvents === 'function') {
+      try {
+        const got = e.getCoalescedEvents();
+        co = got ? got.map(x => +(x.pressure || 0).toFixed(3)) : [];
+      } catch { co = 'throw'; }
+    }
+    rows.push({
+      type: e.pointerType,
+      pressure: +(e.pressure || 0).toFixed(3),
+      coalesced: co === null ? 'n/a' : (Array.isArray(co) ? co.join(',') || '空' : co),
+      tiltX: e.tiltX, tiltY: e.tiltY,
+      width: +(e.width || 0).toFixed(2),
+    });
+  };
   ['pointerdown', 'pointermove', 'pointerup'].forEach(t => v.addEventListener(t, rec, true));
-  console.info('[探针] 已开始记录，请用笔在画布上画一笔');
+  console.info('[探针] 已开始记录，请用笔在画布上画一笔（3 秒）');
+
   return new Promise(resolve => {
     setTimeout(() => {
       ['pointerdown', 'pointermove', 'pointerup'].forEach(t => v.removeEventListener(t, rec, true));
+
       const types = [...new Set(rows.map(r => r.type))];
-      const ps = rows.map(r => r.pressure);
-      const uniq = [...new Set(ps)];
+      const ps = [...new Set(rows.map(r => r.pressure))];
+      const coAll = rows.flatMap(r => (typeof r.coalesced === 'string' && r.coalesced !== 'n/a')
+        ? r.coalesced.split(',') : []).filter(x => x !== '空' && x !== 'throw');
+      const coPs = [...new Set(coAll)];
+
       console.table(rows.slice(0, 20));
-      console.info(`[探针] 共 ${rows.length} 个事件；pointerType=${types.join('/')}；` +
-        `压力取值 ${uniq.slice(0, 8).join(', ')}${uniq.length > 8 ? ' …' : ''}；` +
-        (uniq.length > 1 ? '压力有变化 → 压感可用' : '压力恒定 → 该设备在此浏览器下不提供压感'));
-      resolve({ count: rows.length, types, pressures: uniq });
+      console.info(`[探针] 共 ${rows.length} 个事件`);
+      console.info(`[探针] pointerType = ${types.join(' / ')}`);
+      console.info(`[探针] 原始事件压力取值 = ${ps.slice(0, 8).join(', ')}${ps.length > 8 ? ' …' : ''}`);
+      if (coPs.length) console.info(`[探针] 合并事件压力取值 = ${coPs.slice(0, 8).join(', ')}`);
+
+      let conclusion;
+      if (ps.length > 1) conclusion = '原始事件压力有变化 → 压感可用';
+      else if (coPs.length > 1) conclusion = '原始事件压力恒定、合并事件有变化 → 压力取错了来源';
+      else if (parseFloat(ps[0]) === 0) conclusion = '压力恒为 0 → 此浏览器未把压力交给页面';
+      else if (parseFloat(ps[0]) === 0.5) conclusion = '压力恒为 0.5 → 占位值，此设备在此浏览器下不提供压感';
+      else conclusion = '压力恒定 → 无压感数据';
+      console.info(`[探针] 结论：${conclusion}`);
+
+      resolve({
+        count: rows.length, types, original: ps, coalesced: coPs, conclusion,
+      });
     }, 3000);
   });
 };
@@ -545,10 +586,18 @@ view.addEventListener('pointermove', e => {
     if (got && got.length) evts = got;
   }
 
+  /* 原始事件上有效的压力值，用作合并事件的兜底。
+   *
+   * 合并事件并不保证是完整的 PointerEvent —— Safari 返回的合并事件里
+   * pressure 常为 0 或 undefined。若直接采信，整笔的压力会全部无效，
+   * 表现为「Safari 上没有压感，Chrome / Edge 正常」。
+   * 因此压力优先取合并事件自身的值，无效时回退到原始事件。 */
+  const baseP = (typeof e.pressure === 'number' && e.pressure > 0) ? e.pressure : null;
+
   if (hk.active) {
     for (const ev of evts) {
       const q = toDoc(ev);
-      hk.move(q.x, q.y, pressureOf(ev), tiltOpts(ev, q));
+      hk.move(q.x, q.y, pressureOf(ev, baseP), tiltOpts(ev, q));
     }
     /* 此处**不**执行 flush。
      * pump() 单次需搬运数十个 64×64 块（实测 p90 8.5ms），而压感笔约每 4ms 产生一个事件；
@@ -560,7 +609,7 @@ view.addEventListener('pointermove', e => {
   if (!stroke) return;
   for (const ev of evts) {
     const q = toDoc(ev);
-    stroke.move(q.x, q.y, pressureOf(ev));
+    stroke.move(q.x, q.y, pressureOf(ev, baseP));
   }
   // 仅请求一帧，不在此处重绘 —— 无论事件多少，每帧只绘制一次
   requestPaint();

@@ -120,3 +120,77 @@ const CASES = {
     }
   },
 };
+
+/* ---------- Safari：合并事件不完整的 PointerEvent ----------
+ *
+ * Safari 的 getCoalescedEvents() 返回的合并事件里 pressure 常为 0，
+ * 而原始事件带有真实压力。原实现整体用合并事件替代原始事件，
+ * 于是压力全部变成 0 → 判为无压感 → 整笔满压。
+ *
+ * 实测修复前后：
+ *   修复前  压力序列 [0.25, 1, 1, 1, 1, 1, 1]   只有首笔有效
+ *   修复后  [0.25, 0.35, 0.45, …]              全程有效
+ */
+
+/* 构造一个「Safari 式」事件：自身有压力，合并事件压力全 0 */
+function safariLike(type, pressure, x, y) {
+  const e = new PointerEvent(type, {
+    pointerType: 'pen', pressure, buttons: 1, bubbles: true,
+    clientX: x, clientY: y, pointerId: 9,
+  });
+  Object.defineProperty(e, 'getCoalescedEvents', {
+    value: () => [
+      { pressure: 0, clientX: x, clientY: y },
+      { pressure: 0, clientX: x + 2, clientY: y },
+    ],
+  });
+  return e;
+}
+
+CASES['Safari 式合并事件不丢压感'] = async ({ achi, assert }) => {
+  const hk = achi.hk;
+  if (!hk.ready) return;    // 引擎未就绪时该路径不适用
+
+  const seen = [];
+  const oB = hk.begin.bind(hk), oM = hk.move.bind(hk);
+  hk.begin = (x, y, p, o) => { seen.push(+p.toFixed(3)); return oB(x, y, p, o); };
+  hk.move = (x, y, p, o) => { seen.push(+p.toFixed(3)); return oM(x, y, p, o); };
+
+  try {
+    const view = document.getElementById('view');
+    const r = view.getBoundingClientRect();
+    const cx = r.left + r.width / 2 - 100;
+    const cy = r.top + r.height / 2;
+
+    view.dispatchEvent(safariLike('pointerdown', 0.25, cx, cy));
+    for (let i = 1; i <= 6; i++) {
+      view.dispatchEvent(safariLike('pointermove', 0.25 + i * 0.1, cx + i * 10, cy));
+    }
+    view.dispatchEvent(new PointerEvent('pointerup', {
+      pointerType: 'pen', pressure: 0.85, buttons: 0, bubbles: true,
+      clientX: cx + 60, clientY: cy, pointerId: 9,
+    }));
+  } finally {
+    hk.begin = oB; hk.move = oM;
+  }
+
+  const uniq = [...new Set(seen)];
+  assert(uniq.length > 2,
+    `合并事件压力为 0 时应回退到原始事件压力，实际只有 ${uniq.length} 种取值：${uniq.join(',')}`);
+};
+
+/* 合并事件压力有效时，仍应优先使用它自己的值（不要让兜底盖掉） */
+CASES['合并事件压力有效时优先采用'] = async ({ achi, assert }) => {
+  const { pressureOf, resetPressureObs } = achi;
+  resetPressureObs();
+
+  const ev = { pointerType: 'pen', pressure: 0 };
+  /* 自身无效 → 用兜底 */
+  const a = pressureOf(ev, 0.7);
+  assert(Math.abs(a - 0.7) < 0.001, `应回退到兜底压力 0.7，实际 ${a}`);
+
+  /* 自身有效 → 不用兜底 */
+  resetPressureObs();
+  const b = pressureOf({ pointerType: 'pen', pressure: 0.3 }, 0.9);
+  assert(Math.abs(b - 0.3) < 0.001, `应优先用自身压力 0.3，实际 ${b}`);
+};
