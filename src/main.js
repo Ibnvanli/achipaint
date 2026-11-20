@@ -277,14 +277,80 @@ function redraw() {
   requestPaint();
 }
 
-/* 鼠标没有压感，e.pressure 恒为 0.5。
- * 直接传给 .myb 笔刷会得到极细的线条 —— 其压力曲线按 0~1 设计，
- * 0.5 在 radius 曲线上仅对应 -0.35，直径缩减超过一半。
- * 因此仅压感笔使用真实压力，鼠标统一按满压处理。 */
+/* 压感取值。
+ *
+ * 鼠标没有压感，e.pressure 恒为 0.5。直接交给 .myb 笔刷会得到极细的线条 ——
+ * 其压力曲线按 0~1 设计，0.5 在 radius 曲线上仅对应 -0.35，直径缩减超过一半。
+ * 因此无压感设备一律按满压处理。
+ *
+ * 不能只靠 pointerType 判断。某些浏览器 / 驱动会把数位板同样报告为 'pen'，
+ * 却始终只给 0.5 这个占位值 —— 这时按 pen 分支走就会满屏细线，
+ * 表现为「网页版没有压感」。反过来也有把数位板报成 'mouse' 的情况。
+ *
+ * 因此改为观测本笔的压力范围：只要压力在变，就是真压感，采信它；
+ * 若压力从头到尾不变，判定为无压感设备，按满压处理。
+ */
+const pressureObs = { min: 1, max: 0, n: 0 };
+
+/* 每笔开始时重置观测。 */
+function resetPressureObs() {
+  pressureObs.min = 1; pressureObs.max = 0; pressureObs.n = 0;
+}
+
+/* 压力是否一直在变化。样本不足时无法判断，按「有压感」处理 ——
+ * 宁可前几个点用真实值，也不要一上来就切到满压把笔迹画糊。 */
+function pressureVaries() {
+  return pressureObs.n < 3 || (pressureObs.max - pressureObs.min) > 0.01;
+}
+
 function pressureOf(e) {
-  if (e.pointerType === 'pen') return e.pressure > 0 ? e.pressure : 0.5;
+  const p = typeof e.pressure === 'number' ? e.pressure : 0.5;
+
+  pressureObs.min = Math.min(pressureObs.min, p);
+  pressureObs.max = Math.max(pressureObs.max, p);
+  pressureObs.n++;
+
+  /* 浏览器未提供有效压力时，规范要求报 0.5（按钮按下）或 0（悬停）。
+   * 这两种都不携带画者意图，直接按满压。 */
+  if (!(p > 0)) return pressureVaries() ? 0.5 : 1;
+
+  if (e.pointerType === 'pen') {
+    /* pen 但压力恒定 = 占了 pen 的名义却没给数据（见上方注释）。
+     * 样本足够后判定为无压感，改用满压，避免整笔都是细线。 */
+    if (!pressureVaries()) return 1;
+    return p;
+  }
+
+  /* 非 pen 设备：只要压力不在 0.5 这个占位值上，说明设备确实有压感。 */
+  if (p !== 0.5 && p < 1) return p;
   return 1;
 }
+
+/* 诊断入口：在网页版里执行 `__achiPointerProbe()` 后画一笔，
+ * 控制台会打印浏览器实际报告的指针类型与压力，便于确认压感缺失出在哪一环。 */
+window.__achiPointerProbe = function () {
+  const v = document.getElementById('view');
+  const rows = [];
+  const rec = e => rows.push({
+    type: e.pointerType, pressure: +e.pressure.toFixed(3),
+    buttons: e.buttons, tiltX: e.tiltX, tiltY: e.tiltY,
+  });
+  ['pointerdown', 'pointermove', 'pointerup'].forEach(t => v.addEventListener(t, rec, true));
+  console.info('[探针] 已开始记录，请用笔在画布上画一笔');
+  return new Promise(resolve => {
+    setTimeout(() => {
+      ['pointerdown', 'pointermove', 'pointerup'].forEach(t => v.removeEventListener(t, rec, true));
+      const types = [...new Set(rows.map(r => r.type))];
+      const ps = rows.map(r => r.pressure);
+      const uniq = [...new Set(ps)];
+      console.table(rows.slice(0, 20));
+      console.info(`[探针] 共 ${rows.length} 个事件；pointerType=${types.join('/')}；` +
+        `压力取值 ${uniq.slice(0, 8).join(', ')}${uniq.length > 8 ? ' …' : ''}；` +
+        (uniq.length > 1 ? '压力有变化 → 压感可用' : '压力恒定 → 该设备在此浏览器下不提供压感'));
+      resolve({ count: rows.length, types, pressures: uniq });
+    }, 3000);
+  });
+};
 
 /* ---------- 坐标换算 ---------- */
 function toDoc(e) {
@@ -306,6 +372,8 @@ view.addEventListener('pointerdown', e => {
   // 即使在真机上捕获失败，也不应中断整个落笔流程。
   try { view.setPointerCapture(e.pointerId); } catch { /* 合成事件或已释放 */ }
   const p = toDoc(e);
+  /* 每笔重新观测压力范围，避免上一笔的结论影响这一笔。 */
+  resetPressureObs();
   const pressure = pressureOf(e);
 
   /* 非绘画工具：优先处理并返回，不进入后续笔画流程 */
@@ -2048,6 +2116,9 @@ window.__achi = {
   newDocument, doOpen, doSave, doExport, runCommand,
   get rotateLayer() { return rotateLayer; },
   get commitMove() { return commitMove; },
+  /* 压力判定的测试入口：pressureOf 依赖本笔的观测状态，
+   * 因此同时暴露重置函数，便于用例独立验证每一种设备情形。 */
+  pressureOf, resetPressureObs,
   /* 浮动选区：供测试与调试脚本走真实路径（拖动本身由手势层驱动） */
   liftSelection: () => liftSelection(),
   commitFloating: () => commitFloating(),

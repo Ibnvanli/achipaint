@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AchiPaint</title>
-<link rel="stylesheet" href="./ui/theme.css?v=1795070000">
-<link rel="stylesheet" href="./ui/splash.css?v=1795070000">
+<link rel="stylesheet" href="./ui/theme.css">
+<link rel="stylesheet" href="./ui/splash.css">
 </head>
 <body>
 <div class="app">
@@ -244,7 +244,16 @@
   </div>
 </div>
 
-<script type="module" src="./main.js?v=1795070000"></script>
+<!-- 脚本带时间戳加载。
+     原先写死 ?v=1795070000，改了代码 URL 也不变 ——
+     在未禁用缓存的环境下浏览器会一直用旧文件，表现为「改了没生效」。
+     动态注入可确保每次都取最新版本。 -->
+<script type="module">
+  const s = document.createElement('script');
+  s.type = 'module';
+  s.src = './main.js?v=' + Date.now();
+  document.body.appendChild(s);
+</script>
 
 </body>
 </html>
