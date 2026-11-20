@@ -281,8 +281,66 @@ function redraw() {
  * 直接传给 .myb 笔刷会得到极细的线条 —— 其压力曲线按 0~1 设计，
  * 0.5 在 radius 曲线上仅对应 -0.35，直径缩减超过一半。
  * 因此仅压感笔使用真实压力，鼠标统一按满压处理。 */
+/* 本笔观测到的压力范围，用于判断设备是否真的提供压力数据。 */
+const pressureObs = { min: 1, max: 0, n: 0 };
+
+/* 设备是否提供可用压感。null = 尚未判定。
+ * 判定跨笔画保持，笔画内部不做切换 —— 中途切换会让线条粗细突变。 */
+let penPressureUsable = null;
+
+function resetPressureObs() {
+  pressureObs.min = 1; pressureObs.max = 0; pressureObs.n = 0;
+}
+
+/* 一笔结束时结算，更新对设备的判定。样本太少不下结论。 */
+function settlePressureObs() {
+  if (pressureObs.n < 4) return;
+  penPressureUsable = (pressureObs.max - pressureObs.min) > 0.01;
+}
+
 function pressureOf(e) {
-  if (e.pointerType === 'pen') return e.pressure > 0 ? e.pressure : 0.5;
+  const p = typeof e.pressure === 'number' ? e.pressure : 0;
+  const valid = p > 0;
+
+  if (e.pointerType === 'pen') {
+    if (valid) {
+      pressureObs.min = Math.min(pressureObs.min, p);
+      pressureObs.max = Math.max(pressureObs.max, p);
+      pressureObs.n++;
+    }
+
+    /* 已判定设备不给压力 → 按满压画。
+     * 但仍持续观察：若这一笔又观测到压力变化，说明换了笔或驱动更新了，
+     * 立即改判为可用。否则一旦误判就永久失效。 */
+    if (penPressureUsable === false) {
+      const variesNow = (pressureObs.max - pressureObs.min) > 0.01;
+      if (!variesNow) return 1;
+      penPressureUsable = true;
+      return p;
+    }
+
+    if (penPressureUsable === null) {
+      /* 尚未判定。
+       *
+       * 关键取舍：先按满压画，而不是先按 0.5 画。
+       * 压力恒为 0.5 表示设备没给数据，按 0.5 画会让 80px 的笔刷
+       * 细成十几像素 —— 看起来就是"没有压感"。
+       *
+       * 一旦观测到压力确实在变，立即认定为可用并切到真实值。
+       * 真压感设备最多开头一两个点偏粗，之后正常；
+       * 无压感设备全程满压，不会出现细线。 */
+      const varies = (pressureObs.max - pressureObs.min) > 0.01;
+      if (!varies) return 1;
+      penPressureUsable = true;
+      return p;
+    }
+
+    return valid ? p : 1;
+  }
+
+  /* 非 pen：鼠标的 pressure 恒为 0.5，是占位值不是真实压力。
+   * 但只要不是 0.5，就说明设备确实在报压感（部分浏览器把数位板报成 mouse）。 */
+  if (valid && p !== 0.5) return p;
   return 1;
 }
 
@@ -306,6 +364,7 @@ view.addEventListener('pointerdown', e => {
   // 即使在真机上捕获失败，也不应中断整个落笔流程。
   try { view.setPointerCapture(e.pointerId); } catch { /* 合成事件或已释放 */ }
   const p = toDoc(e);
+  resetPressureObs();
   const pressure = pressureOf(e);
 
   /* 非绘画工具：优先处理并返回，不进入后续笔画流程 */
@@ -506,6 +565,7 @@ function endStroke() {
   }
   if (hk.active) {
     hk.end();
+    settlePressureObs();     // 一笔结束才结算设备是否有压感
     if (pending) history.commit(pending);
     op('抬笔', tool, '历史 ' + history.stack.length);
     refreshThumbs();
@@ -516,6 +576,7 @@ function endStroke() {
   }
   if (!stroke) return;
   stroke.end();
+  settlePressureObs();
   if (pending) history.commit(pending);
   op('抬笔', tool, '历史 ' + history.stack.length);
   refreshThumbs();
@@ -2048,6 +2109,10 @@ window.__achi = {
   newDocument, doOpen, doSave, doExport, runCommand,
   get rotateLayer() { return rotateLayer; },
   get commitMove() { return commitMove; },
+  /* 压感判定的测试入口：跨笔画状态，用例需要能重置 */
+  pressureOf, resetPressureObs, settlePressureObs,
+  get penPressureUsable() { return penPressureUsable; },
+  set penPressureUsable(v) { penPressureUsable = v; },
   /* 浮动选区：供测试与调试脚本走真实路径（拖动本身由手势层驱动） */
   liftSelection: () => liftSelection(),
   commitFloating: () => commitFloating(),
