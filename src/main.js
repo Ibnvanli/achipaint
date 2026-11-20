@@ -298,7 +298,13 @@ function settlePressureObs() {
   penPressureUsable = (pressureObs.max - pressureObs.min) > 0.01;
 }
 
+/* 诊断开关：在控制台执行 __achiNoPressure = true，之后所有笔画按满压绘制。
+ * 用来区分「线条粗细不均」到底是压力造成的，还是渲染路径的问题。 */
+if (typeof window.__achiNoPressure === 'undefined') window.__achiNoPressure = false;
+
 function pressureOf(e) {
+  if (window.__achiNoPressure) return 1;
+
   const p = typeof e.pressure === 'number' ? e.pressure : 0;
   const valid = p > 0;
 
