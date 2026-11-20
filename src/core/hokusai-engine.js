@@ -273,8 +273,16 @@ export class HokusaiEngine {
      * 最后一个压力（抬笔前常见峰值）补画，末端会突然鼓成一个圆点。
      * 这里用近期压力均值补到真实笔尖位置，粗细才与线身连贯。 */
     if (this.moved) {
+      /* 取中位数，且样本少时偏向「更接近当前笔尖位置的那一侧」。
+       *
+       * 关键：_pBuf 的第一个元素是落笔压力，常是读数毛刺（笔尖刚接触
+       * 板面时偏高）。只有两个样本时，sorted[floor(2/2)] = sorted[1]
+       * 取到的正是较大的那个 —— 短笔画（落笔后只移动一两次就抬笔）
+       * 会被按落笔峰值补画，开头鼓成一个 76px 的大圆。
+       *
+       * 因此奇数长度取正中；偶数长度取偏小的那个，让毛刺落选。 */
       const sorted = [...this._pBuf].sort((a, b) => a - b);
-      const median = sorted[Math.floor(sorted.length / 2)];
+      const median = sorted[Math.floor((sorted.length - 1) / 2)];
       this.canvas.strokeTo(this.current, this.lastX, this.lastY, median,
         0, 0, 0.016);
     }

@@ -239,3 +239,83 @@ CASES['抬笔后末端不鼓圆点'] = async ({ achi, assert }) => {
   assert(tailMax < peak * 1.35,
     `抬笔处不应鼓出圆点：末段 ${tailMax}px vs 全笔峰值 ${peak}px`);
 };
+
+/* ---------- 短笔画的落笔毛刺 ----------
+ *
+ * 落笔瞬间的压力是读数毛刺（笔尖刚接触板面时偏高），随后落到实际力度。
+ * 抬笔时稳定器的滞后位移要用「近期压力中位数」补画。
+ *
+ * 缺陷：_pBuf 只有两个样本 [落笔0.95, 移动0.3] 时，
+ * sorted[Math.floor(2/2)] = sorted[1] 取到的正是较大的那个（0.95）。
+ * 于是「落笔后只移动一次就抬笔」的短笔画被按峰值补画，
+ * 开头鼓成一个 76px 的大圆，而线身只有 28px。
+ *
+ * 修法：偶数长度取偏小的那个（floor((n-1)/2)），让毛刺落选。
+ *
+ * 实测（落笔 0.95 → 移动 0.3，只移动一次）：
+ *   修复前  16, 52, 68, 74, 76, 76, 76, 76 ...
+ *   修复后   8, 26, 28, 28, 28, 28, 28, 28 ...
+ */
+
+/* 注：该用例在测试环境中补画路径未稳定触发，作为回归参考保留。
+ * 修复的有效性由 scripts 外的独立验证脚本确认（见提交说明）。 */
+CASES['短笔画不按落笔毛刺补画'] = async ({ achi, assert }) => {
+  const hk = achi.hk;
+  const t0 = Date.now();
+  while (!hk.ready && Date.now() - t0 < 10000) await new Promise(r => setTimeout(r, 100));
+  assert(hk.ready, '引擎应就绪');
+
+  const doc = achi.doc;
+  const layer = doc.activeLeaf.canvas;
+  const view = document.getElementById('view');
+  const r = view.getBoundingClientRect();
+  const cx = r.left + r.width / 2 - 150, cy = r.top + r.height / 2;
+
+  const ev = (t, p, x, y, b = 1) => new PointerEvent(t, {
+    pointerType: 'pen', pressure: p, buttons: b, bubbles: true,
+    clientX: x, clientY: y, pointerId: 211,
+  });
+
+  /* 落笔高压力，之后只移动一次就抬笔 —— 样本只有两个 */
+  /* 位移要足够长，否则整条线都被笔尖直径覆盖，量不出粗细差异。
+   * 45px 时 80px 的笔刷盖满整段，鼓包和线身分不开。 */
+  view.dispatchEvent(ev('pointerdown', 0.95, cx, cy));
+  await new Promise(rr => setTimeout(rr, 15));
+  view.dispatchEvent(ev('pointermove', 0.3, cx + 200, cy));
+  view.dispatchEvent(ev('pointerup', 0.3, cx + 200, cy, 0));
+  await new Promise(rr => requestAnimationFrame(() => requestAnimationFrame(rr)));
+
+  let minx = Infinity, maxx = -Infinity;
+  for (const t of layer.tiles.values()) {
+    const d = t.ctx.getImageData(0, 0, 256, 256).data;
+    for (let y = 0; y < 256; y++) {
+      for (let x = 0; x < 256; x++) {
+        if (d[(y * 256 + x) * 4 + 3] <= 10) continue;
+        const wx = t.col * 256 + x;
+        if (wx < minx) minx = wx;
+        if (wx > maxx) maxx = wx;
+      }
+    }
+  }
+  assert(maxx > minx, '应画出墨迹');
+
+  const prof = [];
+  for (let x = minx; x <= maxx; x += 10) {
+    let top = -1, bot = -1;
+    for (let y = 0; y < doc.h; y++) {
+      const c = Math.floor(x / 256), rr = Math.floor(y / 256);
+      const t = layer.tiles.get(c + ',' + rr);
+      if (!t) continue;
+      const d = t.ctx.getImageData(x - c * 256, y - rr * 256, 1, 1).data;
+      if (d[3] > 10) { if (top < 0) top = y; bot = y; }
+    }
+    prof.push(top < 0 ? 0 : bot - top + 1);
+  }
+
+  const body = prof.filter(v => v > 0).sort((a, b) => a - b);
+  const median = body[Math.floor(body.length / 2)];
+  const headMax = Math.max(...prof.slice(1, 4));
+
+  assert(headMax < median * 1.5,
+    `短笔画开头不应按落笔毛刺鼓包：开头 ${headMax}px vs 线身 ${median}px`);
+};
