@@ -1,11 +1,11 @@
-/* 界面控件：Blender 那一套
+/* 界面控件：Blender 风格
  *
- * 和浏览器原生 range 的区别就三点，但手感完全不同：
- *   1) 整条就是滑块 —— 按哪儿都能拖，不用先瞄准那个小圆头
- *   2) 数值压在条上，拖的时候眼睛不用在两个地方来回看
- *   3) 滚轮、方向键、双击输入数字都能改
+ * 与浏览器原生 range 的差异有三点，操作手感差异明显：
+ *   1) 整条即为滑块 —— 任意位置均可拖动，无需先对准滑块圆头
+ *   2) 数值内嵌于滑块上，拖动时视线无需在两处之间切换
+ *   3) 滚轮、方向键与双击输入均可调整数值
  *
- * 填充宽度用 --p，RGB 那类渐变条用 --grad（给了 gradient 就不画填充）。
+ * 填充宽度使用 --p；RGB 等渐变条使用 --grad（提供 gradient 时不绘制填充）。
  */
 
 export class Slider {
@@ -84,7 +84,7 @@ export class Slider {
 
     el.addEventListener('pointerdown', e => {
       if (this._disabled || this._editing) return;
-      // 双击数字进编辑模式，那两下的 pointerdown 不该当作拖动
+      // 双击数值进入编辑模式，该次 pointerdown 不应被视为拖动
       if (e.target === this.numEl && e.detail > 1) return;
       el.focus();
       pid = e.pointerId;
@@ -100,7 +100,7 @@ export class Slider {
     el.addEventListener('pointermove', e => {
       if (!dragging) return;
       const k = e.shiftKey ? 0.15 : 1;    // Shift 精调
-      // 竖条往上拖是变大，所以 clientY 的增量要反号
+      // 竖向滑块向上拖动为增大，因此 clientY 增量需取反
       const delta = vertical ? (x0 - e.clientY) : (e.clientX - x0);
       this._set(v0 + (delta / w) * (this.max - this.min) * k);
     });
@@ -137,7 +137,7 @@ export class Slider {
     });
   }
 
-  /* 双击数字直接打，Blender 里也是这样 */
+  /* 双击数值可直接输入，与 Blender 行为一致 */
   _editInline() {
     if (this._editing) return;
     this._editing = true;

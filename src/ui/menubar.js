@@ -1,9 +1,9 @@
-/* 命令表 + 网页端菜单栏
+/* 命令表与网页端菜单栏
  *
- * 这里定义的每一个命令，Electron 原生菜单里也有对应项
- * （见 native/electron/main.js 的 buildMenu）——改这里记得同步那边。
+ * 此处定义的每个命令在 Electron 原生菜单中均有对应项
+ * （见 native/electron/main.js 的 buildMenu），修改时需同步更新。
  *
- * 只放**真的能执行**的命令。做不到的先不摆，点了没反应比没有更糟。
+ * 仅收录**可实际执行**的命令。尚未实现的命令不予列出：点击无响应比不提供更糟。
  */
 
 export const COMMANDS = [
@@ -110,7 +110,7 @@ export class MenuBar {
     this.openGroup = group;
     this._panel = panel;
 
-    // 太靠右的话翻到左边，别被窗口切掉
+    // 位置过于靠右时翻转到左侧，避免被窗口边界裁切
     requestAnimationFrame(() => {
       const r = panel.getBoundingClientRect();
       if (r.right > window.innerWidth - 8) {

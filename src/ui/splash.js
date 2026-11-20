@@ -1,8 +1,8 @@
 /* 启动浮层
  *
- * 左边新建、右边最近，参照 Blender 的首页。
- * 但「最近」只有 Electron 里能真的重开 —— 浏览器拿不到文件路径，
- * 所以那边点进去只会提示用「打开文件」。
+ * 左侧为新建，右侧为最近文件，参照 Blender 的首页布局。
+ * 「最近」仅在 Electron 中可真正重新打开 —— 浏览器无法获取文件路径，
+ * 因此在浏览器中点击该条目只会提示改用「打开文件」。
  */
 
 import { VERSION_LABEL } from '../version.js';
@@ -158,7 +158,7 @@ export class Splash {
     this.dW.value = w;
     this.dH.value = h;
 
-    // 预设名带 dpi 就沿用（A4 · 300dpi），否则按边长猜一个合理的
+    // 预设名含 dpi 时沿用（如 A4 · 300dpi），否则按边长推算合理值
     const m = preset && /(\d+)\s*dpi/i.exec(preset.name);
     this.dDpi.value = m ? Number(m[1]) : (Math.max(w, h) >= 2000 ? 300 : 150);
 
@@ -182,7 +182,7 @@ export class Splash {
     const h = this.clamp(this.dH.value, 64, 12000);
     const wantLandscape = dir === 'landscape';
     const isLandscape = w > h;
-    // 只在需要时交换，避免把用户自己输的方形来回翻
+    // 仅在必要时交换，避免用户自行输入的方形尺寸被反复调换
     if (w !== h && wantLandscape !== isLandscape) {
       this.dW.value = h;
       this.dH.value = w;
@@ -206,14 +206,14 @@ export class Splash {
       + (bg === 'transparent' ? ' · 透明底' : '');
     this.dInfo.style.color = mem > 300 ? '#d99a4e' : '';
 
-    // 物理尺寸，按 dpi 换算 —— 打印前最实用的一行
+    // 物理尺寸，按 dpi 换算 —— 打印前最具参考价值的一项
     const mmW = (w / dpi) * 25.4;
     const mmH = (h / dpi) * 25.4;
     this.dPhysical.textContent =
       `${(mmW / 10).toFixed(1)} × ${(mmH / 10).toFixed(1)} cm @ ${dpi} ppi`
       + (mem > 300 ? '　（8GB，偏大）' : '');
 
-    // 方向按钮跟着宽高走
+    // 方向按钮状态随宽高变化
     if (w > h) {
       this.dPortrait.classList.remove('on');
       this.dLandscape.classList.add('on');
@@ -286,7 +286,7 @@ export class Splash {
       : '浏览器版不能按路径重开，用「打开文件…」选一次';
   }
 
-  /* 移除确认：先只删记录，再问要不要连源文件一起删 */
+  /* 移除确认：先仅删除记录，再询问是否同时删除源文件 */
   askRemove(item, row) {
     const hasFile = this.canOpenRecent && item.path;
     row.classList.add('confirming');
@@ -299,7 +299,7 @@ export class Splash {
     label.textContent = hasFile ? '移除这条记录？文件呢' : '移除这条记录？';
     bar.appendChild(label);
 
-    // 按钮单独一行：右栏只有 280px 上下，三个按钮和文字挤一行必然溢出
+    // 按钮独占一行：右栏宽约 280px，三个按钮与文字同行必然溢出
     const actions = document.createElement('div');
     actions.className = 'ri-actions';
 
@@ -349,7 +349,7 @@ export class Splash {
   }
 }
 
-/* 从最近列表里去掉一条（只动 localStorage） */
+/* 从最近列表中移除一条记录（仅操作 localStorage） */
 export function removeRecent(item) {
   const list = readRecent().filter(x => !(x.path && item.path && x.path === item.path)
     && !(!item.path && x.name === item.name && x.time === item.time));

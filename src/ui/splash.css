@@ -1,7 +1,7 @@
 /* 启动浮层
  *
- * 浮在主界面上，不是独立页面 —— 能看到下面已经就位的工具栏和画布，
- * 关掉就直接开始画。跟 Blender 的 splash 一个思路。
+ * 覆盖在主界面之上，而非独立页面 —— 可看到下方已就位的工具栏与画布，
+ * 关闭后即可直接绘制。与 Blender 的 splash 设计思路一致。
  */
 
 .splash {
@@ -11,7 +11,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  /* 压暗但不完全遮住，让人知道下面已经有东西了 */
+  /* 压暗但不完全遮挡，保留对下层内容的感知 */
   background: rgba(10, 10, 9, .72);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
@@ -28,7 +28,7 @@
 .splash-panel {
   width: 720px;
   max-width: calc(100vw - 48px);
-  /* 高度由内容决定，但有上限；超出的部分交给「最近」列表自己滚 */
+  /* 高度由内容决定并设上限；超出部分由「最近」列表自行滚动 */
   max-height: calc(100vh - 48px);
   overflow: hidden;
   padding: var(--s-4) var(--s-5) var(--s-3);
@@ -56,8 +56,8 @@
 .splash-mark {
   width: 34px; height: 34px; flex: 0 0 auto;
   border-radius: 9px;
-  /* 和 Dock 里是同一张图，不另外画一个「差不多的」标记。
-   * 图标本身是深底，在深色面板上几乎看不出边界，描一道细边把它托起来。 */
+  /* 与 Dock 中使用同一张图，不另绘制相似标记。
+   * 图标本身为深色底，在深色面板上边界不明显，因此描一道细边以突显轮廓。 */
   box-shadow: 0 0 0 1px rgba(255, 255, 255, .07);
 }
 
@@ -106,7 +106,7 @@
 }
 .splash-card .m { margin-top: 3px; font-size: var(--t-s); color: var(--fg-2); }
 
-/* 内存吃紧的档位给个暖色提示，8GB 机器上很现实 */
+/* 内存占用较高的档位以暖色提示，在 8GB 设备上尤为必要 */
 .splash-card.heavy .m { color: #d99a4e; }
 
 /* ---------- 两栏 ---------- */
@@ -137,14 +137,14 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
-  /* 别用 flex:1 —— 面板一变高，这一栏就跟着撑，条目被均匀拉成一片空。
-   * 给死上限，多了就在框里滚。 */
+  /* 不可使用 flex:1 —— 面板增高时该栏会随之拉伸，条目被均匀撑开形成大片空白。
+   * 应设置固定上限，超出部分在容器内滚动。 */
   flex: 0 0 auto;
   min-height: 92px;
   max-height: 288px;
   overflow-y: auto;
   margin-bottom: var(--s-2);
-  /* 系统滚动条在深色面板上是一条亮白，太扎眼 */
+  /* 系统滚动条在深色面板上呈亮白色，视觉干扰过大 */
   scrollbar-width: thin;
   scrollbar-color: var(--line-2) transparent;
 }
@@ -229,7 +229,7 @@
 }
 .splash-dim { font-size: var(--t-s); color: var(--fg-2); }
 
-/* Electron 里红绿灯在左上，浮层不受影响；但面板别挡住拖拽区 */
+/* Electron 中窗口控制按钮位于左上，浮层不受影响；但面板不得遮挡拖拽区域 */
 html.electron .splash-panel { -webkit-app-region: no-drag; }
 
 

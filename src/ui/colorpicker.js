@@ -1,17 +1,17 @@
-/* 取色器：照 Blender 那个弹窗做的
+/* 取色器：参照 Blender 取色弹出面板实现
  *
- * 上面是色轮（色相绕一圈 / 饱和度走半径），右边一条明度竖条，
- * 中间 RGB / HSV 切换，下面三根通道条。
+ * 上方为色轮（色相沿圆周分布，饱和度沿半径分布），右侧为明度竖条，
+ * 中部为 RGB / HSV 切换，下方为三根通道条。
  *
- * 两个实现上的选择：
- *   1) 色轮只在启动时画一次（V=1 的盘），明度靠盖一层黑色圆形上去，
- *      透明度 = 1-V。等价于整体乘 V，但不用每次改明度重画 11 万像素。
- *   2) 色相角度按 Blender 摆：红在下、青在上、品红在右下、黄在左下。
- *      θ = -(h + 90)，屏幕 y 向下，所以位置是 (cos θ, -sin θ)。
+ * 两处实现决策：
+ *   1) 色轮仅在启动时绘制一次（V=1 的色盘），明度通过叠加一层黑色圆形实现，
+ *      透明度为 1-V。数学上等价于整体乘以 V，但无需在每次明度变化时重绘约 11 万像素。
+ *   2) 色相角度按 Blender 的约定分布：红色在下、青色在上、品红在右下、黄色在左下。
+ *      取 θ = -(h + 90)，屏幕 y 轴向下，故坐标为 (cos θ, -sin θ)。
  */
 import { Slider } from './widgets.js';
 
-/* ---------- 颜色换算（都是 sRGB 0..255 / HSV h 0..360 s,v 0..1） ---------- */
+/* ---------- 颜色换算（均为 sRGB 0..255；HSV 中 h 为 0..360，s、v 为 0..1） ---------- */
 
 export function hexToRgb(hex) {
   const m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
@@ -141,19 +141,19 @@ export class ColorPicker {
     return rgbToHex(r, g, b);
   }
 
-  /* 外部设色（hex 输入、色板、吸色）走这里 */
+  /* 外部设色入口（hex 输入、色板、吸色） */
   setValue(hex) {
     const rgb = hexToRgb(hex);
     if (!rgb) return;
     const hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
-    // 纯灰时色相没有意义，保留原来的，不然光标会跳到红
+    // 纯灰时色相无实际意义，保留原值，否则光标会跳至红色区域
     if (hsv.s > 1e-6) this.h = hsv.h;
     this.s = hsv.s;
     this.v = hsv.v;
     this._render();
   }
 
-  /* 侧栏拉宽/收窄时叫一次。色轮按 2 倍像素重画，别让它糊。 */
+  /* 侧栏宽度变化时调用一次。色轮按 2 倍像素重绘，避免显示模糊。 */
   resize(size) {
     const px = Math.round(size);
     if (px === this.size) return;
@@ -173,7 +173,7 @@ export class ColorPicker {
     if (this.onChange) this.onChange(this.hex());
   }
 
-  /* V=1 的色盘只画一次；明度靠 .cp-dim 那层黑圆叠上去 */
+  /* V=1 的色盘仅绘制一次；明度通过 .cp-dim 图层叠加黑色圆形实现 */
   _drawWheel() {
     const c = this.wheel;
     const N = c.width;
@@ -196,7 +196,7 @@ export class ColorPicker {
         const s = Math.min(1, rad / R);
         const [r, g, b] = hsvToRgb(h, s, 1);
         d[i] = r; d[i + 1] = g; d[i + 2] = b;
-        // 边缘一像素做点抗锯齿，不然一圈锯齿很显眼
+        // 边缘 1 像素做抗锯齿处理，否则边缘锯齿明显
         d[i + 3] = rad > R - 1 ? Math.round((R - rad) * 255) : 255;
       }
     }
@@ -312,7 +312,7 @@ export class ColorPicker {
   }
 
   _render() {
-    // 光标位置：屏幕 y 向下，所以纵向取 -sin
+    // 光标位置：屏幕 y 轴向下，故纵向取 -sin
     const th = (-(this.h + 90)) * Math.PI / 180;
     const rad = this.s * 50;
     this.cursor.style.left = (50 + Math.cos(th) * rad).toFixed(2) + '%';

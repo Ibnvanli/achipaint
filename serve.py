@@ -22,7 +22,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=ROOT, **kwargs)
 
     def end_headers(self):
-        # 开发期别让浏览器缓存住脚本，改完刷新就是新的
+        # 开发期禁用浏览器脚本缓存，修改后刷新即加载最新版本
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
         self.send_header('Pragma', 'no-cache')
         self.send_header('Expires', '0')
@@ -35,8 +35,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
-    # 默认 backlog 只有 5，浏览器一口气开六七个连接就会被拒，
-    # 表现成随机的 ERR_CONNECTION_RESET
+    # 默认 backlog 仅为 5，浏览器并发建立六七个连接即会被拒绝，
+    # 表现为随机的 ERR_CONNECTION_RESET
     request_queue_size = 128
 
 

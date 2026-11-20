@@ -1,8 +1,8 @@
-/* 独立窗口里的控制台
+/* 独立窗口中的控制台
  *
  * 数据全部来自 BroadcastChannel('achi-console')：
- * 主窗口收到 poll 就回一份快照。Electron 里窗口是主进程建的，
- * 拿不到 opener，所以不用 opener 这套。
+ * 主窗口收到 poll 后返回一份快照。Electron 中窗口由主进程创建，
+ * 无法获取 opener，因此不使用 opener 机制。
  */
 
 const MAX_LOG = 800;
@@ -96,8 +96,8 @@ function pushLocal(level, text) {
 
 /* ---------- 渲染 ---------- */
 
-/* 每一级归到哪个筛选里。
- * 「外接扩展」是给将来的插件系统留的位，现在还没东西往里写。 */
+/* 各级别与筛选分类的映射。
+ * 「外接扩展」为将来插件系统预留的入口，当前尚无写入方。 */
 const FILTER_OF = {
   log: 'all', info: 'all', op: 'all',
   warn: 'warn',
@@ -228,7 +228,7 @@ function render() {
   else if (state.tab === 'act') renderAct();
   else renderLog();
 
-  // 连接状态：3 秒没收到快照就算断
+  // 连接状态：超过 3 秒未收到快照即判定为断开
   const alive = state.lastSeen && (Date.now() - state.lastSeen < 3000);
   linkEl.textContent = alive ? '已连接' : '主窗口无响应';
   linkEl.classList.toggle('off', !alive);

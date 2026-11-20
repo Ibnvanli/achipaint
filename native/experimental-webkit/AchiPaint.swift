@@ -1,17 +1,17 @@
-// AchiPaint 的 macOS 原生壳
+// AchiPaint 的 macOS 原生外壳
 //
-// 为什么不是 Electron：
-//   macOS 27 对 ad-hoc 签名的进程拒绝 task_name_for_pid，
-//   Electron 启动时要做这个检查，于是连官方原版 Electron.app 都打不开。
-//   没有开发者证书（$99/年）就绕不过去。
+// 不采用 Electron 的原因：
+//   macOS 27 拒绝 ad-hoc 签名的进程调用 task_name_for_pid，
+//   Electron 启动时会执行该检查，导致官方原版 Electron.app 同样无法启动。
+//   未持有开发者证书（$99/年）时无法绕过。
 //
-// 为什么是 WKWebView：
-//   它是系统自带的 Chrome 级引擎，原生进程，不需要那套签名检查；
-//   而且 Tauri 在 macOS 上用的也是它 —— 外壳换成它，等于提前把 Tauri 那条路走通。
+// 采用 WKWebView 的原因：
+//   它是系统自带的 Chromium 级引擎，且为原生进程，不触发上述签名检查；
+//   Tauri 在 macOS 上同样使用它，因此改用此后壳也等同于提前验证 Tauri 路线。
 //
-// 用自定义 achi:// 协议而不是 file://：
-//   页面是原生 ES module，还用 fetch 取 .myb 笔刷和 wasm，
-//   file:// 下这些会被 WebKit 拦掉。
+// 采用自定义 achi:// 协议而非 file:// 的原因：
+//   页面使用原生 ES module，并通过 fetch 获取 .myb 笔刷与 wasm，
+//   这些在 file:// 下会被 WebKit 拦截。
 
 import Cocoa
 import WebKit
@@ -47,8 +47,8 @@ final class WebHandler: NSObject, WKURLSchemeHandler {
 
         let headers = [
             "Content-Type": Self.mime(target.pathExtension),
-            /* 三件套缺一不可：光写 Cache-Control 时 WebKit 仍然会缓存脚本，
-             * 结果是改了代码重启 app 还是旧版本（踩过一次，很难看出来）。 */
+            /* 三项响应头缺一不可：仅设置 Cache-Control 时 WebKit 仍会缓存脚本，
+             * 导致修改代码并重启应用后仍加载旧版本（曾出现该问题，且难以察觉）。 */
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
             "Expires": "0",
@@ -66,7 +66,7 @@ final class WebHandler: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
-        // 无需处理：文件是一次读完的
+        // 无需处理：文件为一次性完整读取
     }
 
     static func mime(_ ext: String) -> String {
@@ -99,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     }
 
     func buildWindow() {
-        // 每次启动清掉 URL 缓存，别让旧脚本糊住新代码
+        // 每次启动时清除 URL 缓存，避免旧脚本覆盖新代码
         URLCache.shared.removeAllCachedResponses()
         URLCache.shared.diskCapacity = 0
         URLCache.shared.memoryCapacity = 0
@@ -110,14 +110,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(WebHandler(root: webRoot), forURLScheme: SCHEME)
 
-        // 页面里用 .electron 这个类给 macOS 红绿灯让位、把标题栏变成可拖动区，
-        // 复用网页版已有的适配，壳这边只负责打上标记。
+        // 页面通过 .electron 类为 macOS 窗口控制按钮让位，并将标题栏设为可拖动区域，
+        // 复用网页版已有的适配逻辑，外壳仅负责添加该标记。
         let js = "document.documentElement.classList.add('electron');"
         config.userContentController.addUserScript(
             WKUserScript(source: js, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
 
-        // 绘画应用：别让 WebKit 在后台把 rAF 掐掉
+        // 绘画应用：避免 WebKit 在后台暂停 rAF 回调
         config.suppressesIncrementalRendering = false
 
         webView = WKWebView(frame: .zero, configuration: config)
@@ -143,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    // 无头自检：跑一段脚本把引擎状态、工具数、能否合成写出来
+    // 无头自检：执行一段脚本，输出引擎状态、工具数量与合成能力
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard selfTest else { return }
         let js = """
@@ -204,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
           fps: gaps.length ? +(1000 / gaps.reduce((a,b)=>a+b,0) * gaps.length).toFixed(1) : null,
         };
 
-        // 页面到底加载的是哪一版 main.js
+        // 确认页面实际加载的 main.js 版本
         try {
           const txt = await (await fetch('achi://local/src/main.js')).text();
           out.jsVersion = {
@@ -214,14 +214,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
           };
         } catch (e) { out.jsVersion = 'fetch-fail: ' + e; }
 
-        // 手动抓一帧，看 st-zoom 会不会被 paint 改写
+        // 手动捕获一帧，检查 st-zoom 是否会被 paint 改写
         const zoomEl = document.getElementById('st-zoom');
         const before = zoomEl.textContent;
         zoomEl.textContent = 'PROBE';
         __achi.redraw();
         await wait(600);
         out.probe = { before, after: zoomEl.textContent };
-        // 直接手动跑一次 requestAnimationFrame 看它到底回不回调
+        // 手动执行一次 requestAnimationFrame，确认其是否回调
         let rafFired = false;
         const t0 = performance.now();
         await new Promise(r => requestAnimationFrame(() => { rafFired = true; r(); }));
@@ -253,8 +253,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         appItem.submenu = appMenu
         main.addItem(appItem)
 
-        // 不放撤销/重做：撤销是画布自己的事，走页面的 ⌘Z。
-        // 菜单一旦绑上 Cmd+Z，页面就再也收不到这个键。
+        // 不放置撤销 / 重做菜单项：撤销由画布自身处理，通过页面的 ⌘Z 触发。
+        // 菜单一旦绑定 Cmd+Z，页面将无法再收到该按键事件。
         let editItem = NSMenuItem()
         let editMenu = NSMenu(title: "编辑")
         editMenu.addItem(withTitle: "复制", action: #selector(NSText.copy(_:)), keyEquivalent: "c")

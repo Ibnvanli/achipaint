@@ -1,10 +1,10 @@
 /* 核心：笔刷引擎
- * 这一层是分水岭。判断标准只有一条：
- *   快速划一道和慢慢划一道，出来的是不是同一支笔。
- * 所以采样按「距离」而不是按「时间」—— 按时间采样会快划断线、慢划堆墨。
+ *
+ * 唯一判断标准：快速划动与缓慢划动是否产生同一种笔迹。
+ * 因此采样按「距离」而非「时间」—— 按时间采样会导致快划断线、慢划堆墨。
  */
 
-/* 压感曲线：每条属性一条独立曲线，控制点 0..1 → 0..1 */
+/* 压感曲线：每条属性对应一条独立曲线，控制点取值 0..1 → 0..1 */
 export class Curve {
   constructor(points = [[0, 0], [1, 1]]) { this.points = points; }
   at(t) {
@@ -21,7 +21,7 @@ export class Curve {
   }
 }
 
-/* 笔刷参数：全部可调，且各自有压感曲线 */
+/* 笔刷参数：均可调节，且各自具备压感曲线 */
 export class Brush {
   constructor() {
     this.size = 80;
@@ -40,10 +40,10 @@ export class Brush {
 
 /* 稳定器：滑动平均 + 速度补偿
  *
- * 纯滑动平均必然滞后，滞后 = 手感差。
- * 纯直通则线条毛躁，没有弧。
- * 折中办法：平滑后的点再沿速度方向往前推一点，把滞后补回来。
- * 这样既能抹平抖动，笔尖又贴着真实位置走。
+ * 纯滑动平均必然产生滞后，滞后直接影响手感。
+ * 纯直通则线条毛躁、缺乏弧度。
+ * 折中方案：将平滑后的点沿速度方向前移补偿滞后，
+ * 既抹平抖动，又使笔尖贴合真实位置。
  */
 export class Stabilizer {
   constructor(strength = .12) {
@@ -64,7 +64,7 @@ export class Stabilizer {
     this.vy = ny - this.y;
     this.x = nx; this.y = ny;
 
-    // 速度补偿：把「平滑造成的滞后」还回去，系数随平滑强度增长
+    // 速度补偿：抵消平滑造成的滞后，系数随平滑强度递增
     const comp = Math.min(2.2, this.s * 6);
     return { x: nx + this.vx * comp, y: ny + this.vy * comp };
   }
@@ -72,7 +72,7 @@ export class Stabilizer {
   reset() { this.x = this.y = null; this.vx = this.vy = 0; }
 }
 
-/* 一笔：从按下到松开 */
+/* 单笔：自按下到松开 */
 export class Stroke {
   constructor(brush, ctxLayer) {
     this.brush = brush;
@@ -103,11 +103,11 @@ export class Stroke {
     const size = b.size * b.sizeCurve.at(pressure);
     const step = Math.max(0.8, size * b.spacing);
 
-    /* 沿这段路径按 step 均匀落点。
-     * 以前用 acc 递减算 t，方向是反的（落点顺序倒过来），
-     * 而且快速甩笔时一次能落几百个点，那一帧直接卡住。
-     * 现在按「已走过的距离」正着推进，并且给单次一个上限 ——
-     * 超了就自动放大 step（视觉上略疏，但绝不卡顿）。
+    /* 沿该段路径按 step 均匀落点。
+     * 原实现以 acc 递减计算 t，方向相反（落点顺序颠倒），
+     * 且快速运笔时单次可落数百个点，导致该帧卡顿。
+     * 现按「已走过的距离」正向推进，并为单次设置上限；
+     * 超出上限时自动放大 step（视觉上略微稀疏，但不会卡顿）。
      */
     const need = Math.floor((this.acc + dist) / step);
     const MAX = 64;                       // 单次事件最多落 64 个点
@@ -135,12 +135,12 @@ export class Stroke {
     const alpha = b.opacity * b.opacityCurve.at(pressure) * b.flow * b.flowCurve.at(pressure);
     const r = size / 2;
 
-    // 裁剪到画布内：画笔不能画到纸外面去
+    // 裁剪到画布范围内：笔迹不得越出画布
     const L = this.layer;
     let cx0 = Math.max(0, x - r), cy0 = Math.max(0, y - r);
     let cx1 = Math.min(L.w, x + r), cy1 = Math.min(L.h, y + r);
-    // 有框选就再收一道。光收包围盒不够 —— 笔点圆弧还是会在框内那几块里画到框外，
-    // 所以下面每块还要 ctx.clip 一次。
+    // 存在框选时进一步收缩范围。仅收缩包围盒不足 —— 笔点圆弧仍可能在框内各块中
+    // 超出选框，因此下方对每块还需执行一次 ctx.clip。
     const clip = this.clip;
     if (clip) {
       cx0 = Math.max(cx0, clip.x0); cy0 = Math.max(cy0, clip.y0);
@@ -148,10 +148,10 @@ export class Stroke {
     }
     if (cx1 <= cx0 || cy1 <= cy0) return;
 
-    // 一次笔点覆盖的所有块都要画到。
-    // 只画「点中心那一块」的话，边缘跨块处会被裁掉，大笔刷画出来就是串珠。
-    // 写之前先让撤销层把「这一笔的覆盖区域」原样拍下来。
-    // 注意是「区域」不是「块」—— 按块拍会误伤块里别的笔画。
+    // 单次笔点覆盖的所有块都需绘制。
+    // 若仅绘制「点中心所在的块」，跨块边界处会被裁切，大笔刷将呈现点串状。
+    // 写入前先由撤销层将「这一笔的覆盖区域」原样拍摄。
+    // 注意是「区域」而非「块」—— 按块拍摄会误伤块内其他笔迹。
     if (this.onRegion) this.onRegion(cx0, cy0, cx1, cy1);
 
     L.forEachTileInBounds(cx0, cy0, cx1, cy1, (ctx, c, r2) => {
@@ -178,7 +178,7 @@ export class Stroke {
       if (clip) ctx.restore();
     });
 
-    // 累积脏块范围（也是撤销与重绘的依据）
+    // 累积脏块范围（同时作为撤销与重绘的依据）
     L.markDirty(cx0, cy0, cx1, cy1);
     if (!this.bounds) this.bounds = { x0: cx0, y0: cy0, x1: cx1, y1: cy1 };
     else {

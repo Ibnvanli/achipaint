@@ -1,6 +1,7 @@
-/* 事件总线：插件只许「听」，不许「拦笔」
- * 关键设计：emit 不 await、不返回值、不传播异常。
- * 任何一个插件把笔刷热路径拖慢或抛错，都不能影响画画。
+/* 事件总线：插件只能监听，不能拦截笔迹
+ *
+ * 关键设计：emit 不 await、不返回结果、不传播异常。
+ * 任何插件拖慢笔刷热路径或抛出异常，均不得影响绘制。
  */
 export class Bus {
   constructor() { this.map = new Map(); }
@@ -11,7 +12,7 @@ export class Bus {
     return () => this.map.get(evt).delete(fn);
   }
 
-  // 单向广播：不等待、不收集结果、捕获所有异常
+  // 单向广播：不等待、不收集结果、捕获全部异常
   emit(evt, payload) {
     const set = this.map.get(evt);
     if (!set) return;
@@ -21,7 +22,7 @@ export class Bus {
   }
 }
 
-/* 插件注册表：只暴露边缘能力，不给核心钩子 */
+/* 插件注册表：仅暴露边缘能力，不提供核心钩子 */
 export class PluginHost {
   constructor(bus) {
     this.bus = bus;

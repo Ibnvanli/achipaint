@@ -1,5 +1,5 @@
 /* 核心：颜色
- * 只做画画需要的：HSV 拾色 + 色板。色彩管理（ICC）留到插件层。
+ * 仅实现绘制所必需的部分：HSV 拾色与色板。色彩管理（ICC）留给插件层。
  */
 export function hsvToRgb(h, s, v) {
   h = ((h % 360) + 360) % 360;
@@ -35,7 +35,7 @@ export function rgbToHsv(r, g, b) {
   return [((h + 360) % 360), max ? d / max : 0, max];
 }
 
-/* 默认色板：中性 + 一点常用 */
+/* 默认色板：中性色 + 少量常用色 */
 export const DEFAULT_SWATCHES = [
   '#000000', '#1a1a1a', '#333333', '#666666', '#999999', '#cccccc', '#ffffff',
   '#e5484d', '#f76b15', '#ffb224', '#46a758', '#12a594', '#0091ff', '#6e56cf',

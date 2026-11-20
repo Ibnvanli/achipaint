@@ -1,13 +1,14 @@
 /* AchiPaint 唯一主题源
- * 规则：所有颜色/圆角/间距/字号只从这里取，组件里不许写死。
- * 这是 Krita「方角圆角并存」的反面教材改法 —— 一个 token 管到底。
+ *
+ * 规则：所有颜色 / 圆角 / 间距 / 字号只从本文件获取，组件中不得硬编码。
+ * 这是针对 Krita「方角圆角并存」问题的改法 —— 由单一 token 统一管理。
  */
 :root {
-  /* 灰阶：三级面 + 两级线，全部同族
+  /* 灰阶：三级面 + 两级线，全部属于同一色系
    *
-   * 旧值是偏冷的蓝灰（#14161a 一族）。问题在色相：界面铺一层蓝，
-   * 同一块纸上画的颜色就会被衬得偏暖、偏脏 —— 画的人分不清是画错了还是屏偏了。
-   * 现在换成中性灰，只偏暖 1～2 个色阶，不跟画面抢色相。
+   * 原值为偏冷的蓝灰（#14161a 系列）。问题在于色相：界面带蓝调时，
+   * 同一画布上的颜色会被衬得偏暖、偏脏，使用者难以区分是配色失误还是显示偏色。
+   * 现改为中性灰，仅偏暖 1–2 个色阶，避免与画面争夺色相。
    */
   --bg-0: #141413;
   --bg-1: #1a1a19;
@@ -21,8 +22,8 @@
   --fg-1: #b4b3ae;
   --fg-2: #7c7b75;
 
-  /* 强调色：只一个，别多。
-   * 蓝在深灰上太"网页"，换成琥珀 —— 像台灯打在案头，且不会和画布里的蓝绿打架。 */
+  /* 强调色：仅保留一个。
+   * 蓝色在深灰背景上呈明显网页感，改用琥珀色 —— 接近台灯照明效果，且不与画布中的蓝绿色冲突。 */
   --accent: #dfa03c;
   --accent-dim: #a9781f;
 
@@ -57,8 +58,8 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* 这是工具界面，不是文档：拖任何地方都不该把文字刷成蓝色。
- * 只给真正要输入的地方放开。 */
+/* 这是工具界面而非文档界面：在任意位置拖动都不应将文本刷成选中蓝色。
+ * 仅对真正需要输入的位置放开该行为。 */
 * {
   -webkit-user-select: none;
   user-select: none;
@@ -177,7 +178,7 @@ html.electron .tb-menus { display: none; }
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--r-s);
-  /* 比正文略亮一点：这几个是仅有的全局操作，太暗会找不着 */
+  /* 较正文略亮：这些是仅有的全局操作入口，过暗将难以定位 */
   color: #cfcdc7;
   cursor: pointer;
   -webkit-app-region: no-drag;
@@ -194,7 +195,7 @@ html.electron .tb-menus { display: none; }
 .icon-btn:active { background: var(--bg-2); }
 .icon-btn:disabled { opacity: .35; cursor: default; background: transparent; }
 
-/* 忙碌态：变暗 + 转圈光标，图标原样留着，别拿文字换掉它 */
+/* 忙碌态：整体变暗 + 转圈光标，图标保持不变，不得以文字替换 */
 .icon-btn.busy { opacity: .45; cursor: progress; }
 .icon-btn.busy svg { animation: btn-pulse 1.1s ease-in-out infinite; }
 @keyframes btn-pulse {
@@ -202,7 +203,7 @@ html.electron .tb-menus { display: none; }
   50%      { opacity: .45; }
 }
 
-/* Electron：标题栏左让出 78px 给 macOS 红绿灯，整条可拖动，按钮除外 */
+/* Electron：标题栏左侧预留 78px 给 macOS 窗口控制按钮，整条可拖动，按钮除外 */
 html.electron .titlebar {
   padding-left: 84px;
   -webkit-app-region: drag;
@@ -217,7 +218,7 @@ html.electron .titlebar select {
 .sidebar {
   background: var(--bg-1);
   position: relative;
-  /* 侧栏缺的从来是高度不是宽度：上面两块按内容自然高，
+  /* 侧栏的瓶颈始终在高度而非宽度：上方两块按内容自适应高度，
      图层面板吃掉剩下的，自己在框里滚 —— 停靠面板就该这样。 */
   display: flex; flex-direction: column;
   overflow-y: auto;
@@ -232,7 +233,7 @@ html.electron .titlebar select {
   flex: 1 1 auto; min-height: 0; overflow-y: auto;
 }
 
-/* 拖左边缘改宽度。宽度存在 localStorage 里，下次打开还是你调过的样子。 */
+/* 拖动左边缘调整宽度。宽度存储于 localStorage，下次启动保持上次的设定。 */
 .sidebar-grip {
   position: absolute; left: 0; top: 0; bottom: 0; width: 7px;
   margin-left: -3px; z-index: 6;
@@ -283,15 +284,15 @@ html.electron .titlebar select {
 
 .field { display: flex; align-items: center; gap: var(--s-2); margin-bottom: var(--s-2); }
 .field label { flex: 0 0 68px; color: var(--fg-1); font-size: var(--t-s); }
-/* min-width:0 必须写：range 有固有最小宽度（约 125px），
- * 260px 栏里一行只给得出 236px，它不肯缩就会把右边的数值挤出可视区，
- * 于是 80 显示成 "8"、100 显示成 "10"。 */
+/* min-width:0 必须显式声明：range 具有固有最小宽度（约 125px）。
+ * 260px 侧栏中单行可用宽度仅 236px，若不收缩会把右侧数值挤出可视区域，
+ * 表现为 80 显示为 "8"、100 显示为 "10"。 */
 .field input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); }
 .field .val { flex: 0 0 42px; text-align: right; font-family: var(--mono); font-size: var(--t-s); color: var(--fg-2); font-variant-numeric: tabular-nums; }
 
 /* ---------- Blender 式控件 ----------
- * 整条就是滑块：拖哪儿都行，没有圆滑块头，数值压在条上。
- * 填充宽度走 --p；RGB 那类渐变条走 --grad，此时不画填充。 */
+ * 整条即为滑块：任意位置可拖动，无滑块圆头，数值内嵌于条上。
+ * 填充宽度使用 --p；RGB 等渐变条使用 --grad，此时不绘制填充。 */
 .bslider {
   position: relative;
   display: flex; align-items: center; gap: var(--s-2);
@@ -329,7 +330,7 @@ html.electron .titlebar select {
   font: inherit; font-family: var(--mono); text-align: right; outline: none;
 }
 
-/* 渐变条（RGB / 色相）：整条就是色带，没有填充 */
+/* 渐变条（RGB / 色相）：整条即为色带，不绘制填充 */
 .bslider.grad { background: var(--grad, var(--bg-2)); }
 .bslider.grad:hover { background: var(--grad, var(--bg-3)); }
 .bslider.grad .bs-fill { display: none; }
@@ -337,8 +338,8 @@ html.electron .titlebar select {
 .bslider.grad .bs-num { text-shadow: 0 0 2px rgba(0,0,0,.9), 0 0 5px rgba(0,0,0,.7); }
 .bslider.grad .bs-num { color: #fff; }
 
-/* 停用态：别整块降透明度 —— 文字会被一起压到看不清（实测 2.37:1）。
- * 改成填灰、字降到 --fg-2，仍然读得出来，但一眼知道不归你管。 */
+/* 停用态：不可整体降低透明度 —— 文字会随之降至对比度 2.37:1，难以辨认。
+ * 改为填充灰色、文字降至 --fg-2，既保持可读性，又能明确表达不可用状态。 */
 .bslider.disabled { cursor: default; }
 .bslider.disabled .bs-fill { background: var(--line-2); }
 .bslider.disabled .bs-label { color: var(--fg-2); }
@@ -393,7 +394,7 @@ html.electron .titlebar select {
 
 /* ---------- 图层树 ---------- */
 .lay-tools { display: flex; gap: var(--s-1); margin-left: auto; }
-/* 高度由 .panel.layers 的弹性分配决定，这里不用再限死 */
+/* 高度由 .panel.layers 的弹性分配决定，此处无需再固定 */
 
 /* 选中行下面的属性条 */
 /* 吸在列表顶部：滚列表时它不动，行也不会因为选中而跳位 */
