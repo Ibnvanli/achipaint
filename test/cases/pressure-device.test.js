@@ -85,11 +85,81 @@ const CASES = {
     }
   },
 
-  /* 无压感数据的 pen：压力为 0 时不能返回 0，否则笔迹零宽 */
-  '压力无效时不返回零': async ({ achi, assert }) => {
+  /* 压感笔的零压力应如实返回 0，不再转成满压。
+   *
+   * 曾写反过：这条用例原先断言「无效压力不应返回 0」，
+   * 把「0 → 满压」这个错误行为当成了预期，反而掩护了真正的缺陷
+   * （零压力 pointermove 被当成满压绘制，基础笔刷在原地补出大黑点）。 */
+  '压感笔零压力如实返回 0': async ({ achi, assertEq }) => {
     const { pressureOf } = achi;
-    const v = pressureOf({ pointerType: 'pen', pressure: 0 });
-    assert(v > 0, `无效压力不应返回 0，实际 ${v}`);
+    assertEq(pressureOf({ pointerType: 'pen', pressure: 0 }), 0,
+      '压感笔 pressure=0 应如实返回 0');
+    assertEq(pressureOf({ pointerType: 'pen', pressure: 0.4 }), 0.4,
+      '正常压力应原样返回');
+  },
+
+  /* 零压力 / buttons=0 的 pen 事件不应进入绘制 */
+  '零压力事件不产生笔迹': async ({ achi, assert }) => {
+    const hk = achi.hk;
+    const t0 = Date.now();
+    while (!hk.ready && Date.now() - t0 < 10000) await new Promise(r => setTimeout(r, 100));
+    assert(hk.ready, '引擎应就绪');
+
+    const doc = achi.doc;
+    const layer = doc.activeLeaf.canvas;
+    const view = document.getElementById('view');
+    const r = view.getBoundingClientRect();
+    const cx = r.left + r.width / 2 - 150, cy = r.top + r.height / 2;
+
+    const ev = (t, p, x, y, b = 1) => new PointerEvent(t, {
+      pointerType: 'pen', pressure: p, buttons: b, bubbles: true,
+      clientX: x, clientY: y, pointerId: 521,
+    });
+
+    /* 低压运笔 → 零压力 move（模拟抬笔前浏览器补发的收尾事件）→ 抬笔 */
+    view.dispatchEvent(ev('pointerdown', 0.3, cx, cy));
+    for (let i = 1; i <= 15; i++) {
+      await new Promise(rr => setTimeout(rr, 12));
+      view.dispatchEvent(ev('pointermove', 0.3, cx + i * 14, cy));
+    }
+    await new Promise(rr => setTimeout(rr, 12));
+    view.dispatchEvent(ev('pointermove', 0, cx + 15 * 14, cy, 1));
+    view.dispatchEvent(ev('pointerup', 0.3, cx + 15 * 14, cy, 0));
+    await new Promise(rr => requestAnimationFrame(() => requestAnimationFrame(rr)));
+
+    let minx = Infinity, maxx = -Infinity;
+    for (const t of layer.tiles.values()) {
+      const d = t.ctx.getImageData(0, 0, 256, 256).data;
+      for (let y = 0; y < 256; y++) {
+        for (let x = 0; x < 256; x++) {
+          if (d[(y * 256 + x) * 4 + 3] <= 10) continue;
+          const wx = t.col * 256 + x;
+          if (wx < minx) minx = wx;
+          if (wx > maxx) maxx = wx;
+        }
+      }
+    }
+    assert(maxx > minx, '应画出墨迹');
+
+    const prof = [];
+    for (let x = minx; x <= maxx; x += 8) {
+      let top = -1, bot = -1;
+      for (let y = 0; y < doc.h; y++) {
+        const c = Math.floor(x / 256), rr = Math.floor(y / 256);
+        const t = layer.tiles.get(c + ',' + rr);
+        if (!t) continue;
+        const d = t.ctx.getImageData(x - c * 256, y - rr * 256, 1, 1).data;
+        if (d[3] > 10) { if (top < 0) top = y; bot = y; }
+      }
+      prof.push(top < 0 ? 0 : bot - top + 1);
+    }
+    const body = prof.filter(v => v > 0).sort((a, b) => a - b);
+    const median = body[Math.floor(body.length / 2)];
+    const maxT = Math.max(...body);
+
+    /* 修复前：中位 8px，最大 78px（原地补出一个满压 dab） */
+    assert(maxT < median * 2,
+      `零压力事件不应产生粗点：最大 ${maxT}px vs 线身中位 ${median}px`);
   },
 };
 

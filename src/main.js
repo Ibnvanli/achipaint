@@ -285,6 +285,25 @@ function redraw() {
  * 用来区分「线条粗细不均」到底是压力造成的，还是渲染路径的问题。 */
 if (typeof window.__achiNoPressure === 'undefined') window.__achiNoPressure = false;
 
+/* 该事件是否应当产生笔迹。
+ *
+ * 压感笔在真正抬笔之前，浏览器可能补发 pressure === 0 的 pointermove，
+ * 有时还带 buttons = 0。这类事件不该继续绘制：
+ *
+ *   - pressure 为 0 表示笔尖已离开板面
+ *   - buttons 为 0 表示没有任何按键按下，本就不是绘制状态
+ *
+ * 放行的后果很具体：基础笔刷（brush.myb）的 dabs_per_second = 70，
+ * 即使指针不移动，也会按经过的时间在原地补 dab；再叠加 pressure 被当成
+ * 满压，就在抬笔处形成一个比线身粗一个数量级的黑点。
+ *
+ * 其余三个预设 dabs_per_second 均为 0，因此该缺陷只在基础笔刷上显现。 */
+function isDrawableEvent(e) {
+  if (e.pointerType !== 'pen') return true;      // 鼠标没有真实压力，不据此过滤
+  if (e.buttons === 0) return false;
+  return !(typeof e.pressure === 'number' && e.pressure <= 0);
+}
+
 function pressureOf(e) {
   if (window.__achiNoPressure) return 1;
 
@@ -299,8 +318,15 @@ function pressureOf(e) {
    *      「一头粗黑、后面变细」的蝌蚪形。
    *   2) 真压感设备的第一笔完全没有压感，用户得「先画一笔试试」。
    *
-   * 已整体移除。压力值为 0（无效读数）时退回满压，避免画出零宽笔迹。 */
-  if (e.pointerType === 'pen') return p > 0 ? p : 1;
+   * 已整体移除。
+   *
+   * 注意这里**不再**把 pressure === 0 转成满压。
+   * 对压感笔而言，0 通常是「笔尖已离开板面」，此时仍可能收到 pointermove
+   * （浏览器在 pointerup 之前补发、或带 buttons=0 的收尾事件）。
+   * 若把这种事件当成满压绘制，基础笔刷的 dabs_per_second = 70 会立刻在原地
+   * 按时间补出一个满压力 dab —— 表现就是抬笔处多出一个大黑点。
+   * 这类事件现在由 isDrawableEvent() 在入口拦掉；此处如实返回 0 作为第二层防护。 */
+  if (e.pointerType === 'pen') return p;
 
   /* 非 pen：鼠标的 pressure 恒为 0.5，是占位值不是真实压力。
    * 但只要不是 0.5，就说明设备确实在报压感（部分浏览器把数位板报成 mouse）。 */
@@ -522,6 +548,9 @@ view.addEventListener('pointermove', e => {
 
   if (hk.active) {
     for (const ev of evts) {
+      /* 逐个过滤合并事件：一个 pointermove 里可能混着正常事件和零压力收尾事件，
+       * 只按首个事件判断会漏掉后面的。 */
+      if (!isDrawableEvent(ev)) continue;
       const q = toDoc(ev);
       hk.move(q.x, q.y, pressureOf(ev), tiltOpts(ev, q));
     }
@@ -534,6 +563,7 @@ view.addEventListener('pointermove', e => {
 
   if (!stroke) return;
   for (const ev of evts) {
+    if (!isDrawableEvent(ev)) continue;
     const q = toDoc(ev);
     stroke.move(q.x, q.y, pressureOf(ev));
   }
