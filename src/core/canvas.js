@@ -1,8 +1,9 @@
 /* 核心：分块画布
- * 修过的坑：
- *  1) 跨块笔点被裁成串珠 —— forEachTileInBounds 遍历包围盒内所有块
- *  2) 画出画布 —— 合成与导出都裁剪到 (0,0,w,h)
- *  3) 每帧全量重绘太慢 —— 加离屏合成缓存，只刷脏块
+ *
+ * 已修正的三类问题，修改本文件时应避免回归：
+ *  1) 跨块笔点被裁切成点串 —— forEachTileInBounds 遍历包围盒内所有块
+ *  2) 笔迹越出画布 —— 合成与导出均裁剪到 (0, 0, w, h)
+ *  3) 每帧全量重绘过慢 —— 增加离屏合成缓存，仅刷新脏块
  */
 export const TILE = 256;
 
@@ -41,9 +42,9 @@ export class TileCanvas {
     for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) this.dirty.add(this.key(c, r));
   }
 
-  /* 一次笔点画满它覆盖的所有块。
-   * 只画「点中心那一块」的话，边缘跨块处会被裁掉，大笔刷画出来就是串珠。
-   * fn(ctx, c, r) —— 每块都用自己的平移，但用的是同一个整图坐标。
+  /* 单次笔点绘制其覆盖的全部块。
+   * 若仅绘制「点中心所在的块」，跨块边界处会被裁切，大笔刷将呈现点串状。
+   * fn(ctx, c, r)：每块使用各自的平移，但作用于同一整图坐标。
    */
   forEachTileInBounds(x0, y0, x1, y1, fn) {
     const T = TILE;
@@ -77,8 +78,8 @@ export class TileCanvas {
 }
 
 /* ---------- 图层树 ----------
- * 节点的 children 按「显示顺序」排：children[0] 是最上面那一层。
- * 合成的时候要倒着走（从最底下开始叠），别搞反。
+ * 节点的 children 按显示顺序排列：children[0] 为最上层。
+ * 合成时必须反向遍历（自最底层开始叠加），顺序不可颠倒。
  */
 export class LayerNode {
   constructor(name) {
@@ -96,8 +97,8 @@ export class Layer extends LayerNode {
     super(name);
     this.w = w; this.h = h;
     this.canvas = new TileCanvas(w, h);
-    /* 蒙版是一个普通的 TileCanvas，但只拿它的 alpha 用：
-     * 有内容 = 那里看得见，空 = 那里被抠掉（destination-in）。 */
+    /* 蒙版本身是普通 TileCanvas，仅使用其 alpha 通道：
+     * 有内容 = 该处可见，为空 = 该处被抠除（destination-in）。 */
     this.mask = null;
   }
   ensureMask() {
@@ -106,9 +107,9 @@ export class Layer extends LayerNode {
   }
 }
 
-/* 组本身不带像素。合成时先把子节点合到一张隔离缓冲上，
- * 再按组的不透明度 / 混合模式整体叠上去 —— 这才是「组」该有的语义，
- * 否则组的不透明度会把组里互相重叠的图层变成半透加法。
+/* 组本身不携带像素。合成时先将子节点合成到一张隔离缓冲，
+ * 再按组的不透明度 / 混合模式整体叠加。这是「组」应有的语义；
+ * 否则组的不透明度会使组内互相重叠的图层退化为半透明叠加。
  */
 export class LayerGroup extends LayerNode {
   constructor(name = '组') {
@@ -119,7 +120,7 @@ export class LayerGroup extends LayerNode {
   get isGroup() { return true; }
 }
 
-/* 只走叶子（真正有像素的那些） */
+/* 仅遍历叶子节点（即实际携带像素的节点） */
 export function walkLeaves(nodes, fn) {
   for (const n of nodes) {
     if (n.isGroup) walkLeaves(n.children, fn);
@@ -127,7 +128,7 @@ export function walkLeaves(nodes, fn) {
   }
 }
 
-/* 第一个叶子 —— 删东西之后要有个落点 */
+/* 第一个叶子节点 —— 删除节点后需要新的落点 */
 export function firstLeaf(nodes) {
   for (const n of nodes) {
     if (n.isGroup) {
@@ -140,7 +141,7 @@ export function firstLeaf(nodes) {
   return null;
 }
 
-/* 某个节点是不是在给定子树里 */
+/* 判断某节点是否位于给定子树内 */
 export function within(node, nodes) {
   for (const n of nodes) {
     if (n === node) return true;
@@ -149,7 +150,7 @@ export function within(node, nodes) {
   return false;
 }
 
-/* a 是不是 node 的祖先 —— 拖拽时防止把组拖进自己肚子里 */
+/* 判断 a 是否为 node 的祖先 —— 拖拽时防止将组拖入其自身 */
 export function isAncestor(a, node) {
   for (let p = node.parent; p; p = p.parent) if (p === a) return true;
   return false;
@@ -161,8 +162,8 @@ export class Doc {
    * @param {number} w
    * @param {number} h
    * @param {{background?: 'white'|'transparent'}} opts
-   *   background 只影响「纸」怎么显示，不往图层里写像素 ——
-   *   所以切背景不会污染画稿，导出时也按它决定要不要垫白。
+   *   background 仅影响「纸」的显示方式，不向图层写入像素，
+   *   因此切换背景不会污染画稿；导出时据此决定是否垫白底。
    */
   constructor(w, h, opts = {}) {
     this.w = w; this.h = h;
@@ -179,50 +180,50 @@ export class Doc {
 
     this.view = { x: 0, y: 0, zoom: 1 };
 
-    // 离屏合成缓冲：所有层先合到这里，重绘时只做一次 drawImage
+    // 离屏合成缓冲：所有图层先合成至此，重绘时只需一次 drawImage
     this.off = document.createElement('canvas');
     this.off.width = w; this.off.height = h;
     this.offctx = this.off.getContext('2d');
     this.dirtyTiles = new Set();
     this._tileScratch = [];      // 组隔离用的 256×256 暂存，按嵌套深度取
 
-    /* 笔迹覆盖层：正在画的那一笔先落这儿，松手才压进图层。
-     * 外置笔刷（hokusai）一笔内会不断累加，逐事件往图层 source-over
-     * 会把重叠处一遍遍叠黑；压成「一次性用完」就干净了。
-     * 键是 64×64 的块（跟 blocks 不同，别混用），值是 {canvas,ctx,x,y,w,h}。
+    /* 笔迹覆盖层：当前正在绘制的一笔先落于此，松手后才压入图层。
+     * 外置笔刷（hokusai）在单笔范围内持续累加，若逐事件以 source-over
+     * 写入图层，重叠处会被反复叠加而变黑；一次性压入可避免该问题。
+     * 键为 64×64 的块（与 blocks 不同，不可混用），值为 {canvas, ctx, x, y, w, h}。
      */
     this.overlay = new Map();
     this.overlayActive = false;
     this.overlayAlpha = 1;
 
-    /* 矩形框选：{x0,y0,x1,y1} 世界坐标。null = 没选。
-     * 现在只做一件事：把笔画限制在框里。 */
+    /* 矩形框选：{x0, y0, x1, y1} 世界坐标。null 表示未选择。
+     * 当前唯一作用：将笔画限制在框内。 */
     this.selection = null;
-    /* 正在编辑当前图层的蒙版（笔画落到 mask 上） */
+    /* 当前是否处于图层蒙版编辑状态（笔画写入 mask） */
     this.maskMode = false;
-    /* 移动工具的实时预览，不复制任何像素，只在合成时偏移 */
+    /* 移动工具的实时预览：不复制像素，仅在合成时施加偏移 */
     this.previewOffset = null;
   }
 
-  /* 笔画该落到哪儿：蒙版模式下落蒙版，否则落图层 */
+  /* 笔画写入目标：蒙版模式下写入蒙版，否则写入图层 */
   get paintTarget() {
     const l = this.activeLeaf;
     if (!l) return null;
     return (this.maskMode && l.mask) ? l.mask : l.canvas;
   }
 
-  /* 旧代码里 doc.layers 指根下的直接子节点，保留 */
+  /* 兼容保留：doc.layers 指向根节点的直接子节点 */
   get layers() { return this.root.children; }
   get layer() { return this.activeLeaf; }
 
-  /* 选中某个节点；选到组时画笔仍然落在上一次的叶子上 */
+  /* 选中节点；若选中的是组，画笔仍落在上一次选中的叶子上 */
   select(node) {
     this.selected = node;
     if (node && !node.isGroup) this.activeLeaf = node;
     return node;
   }
 
-  /* 新图层：插在选中项的上方（同一层），选中的是组就插进组里最上面 */
+  /* 新建图层：插入到选中项上方（同一层级）；若选中的是组，则插入该组最上层 */
   addLayer() {
     const sel = this.selected || this.root;
     const parent = sel.isGroup ? sel : (sel.parent || this.root);
@@ -234,8 +235,8 @@ export class Doc {
     return l;
   }
 
-  /* 新组：选中的是图层就把它包进去（最常用的做法），
-   * 选中的是组就在它上面建一个空组 */
+  /* 新建组：若选中的是图层，则将其包裹进新组（最常用做法）；
+   * 若选中的是组，则在其上方创建一个空组 */
   addGroup() {
     const sel = this.selected || this.root;
     if (sel.isGroup) {
@@ -250,7 +251,7 @@ export class Doc {
     const index = Math.max(0, parent.children.indexOf(sel));
     const g = new LayerGroup('组 ' + (++this._seq));
     g.parent = parent;
-    // 先把组放到图层的位置上，再把图层搬进去
+    // 先将组放到图层原位置，再把图层移入该组
     parent.children.splice(index, 0, g);
     parent.children.splice(parent.children.indexOf(sel), 1);
     g.children.push(sel);
@@ -259,7 +260,7 @@ export class Doc {
     return g;
   }
 
-  /* 移动节点。newParent 不能是它自己或它的子孙。 */
+  /* 移动节点。newParent 不能是其自身或其子孙节点。 */
   moveNode(node, newParent, index) {
     if (!node || !newParent) return false;
     if (node === newParent) return false;
@@ -275,13 +276,13 @@ export class Doc {
     return true;
   }
 
-  /* 删除节点（组会连子孙一起删）。
-   * 至少留一个叶子：画布上不能一个能画的图层都没有。 */
+  /* 删除节点（组将连同子孙一并删除）。
+   * 必须至少保留一个叶子节点：画布上不允许没有任何可绘制的图层。 */
   deleteNode(node) {
     if (!node || node === this.root) return false;
 
-    /* 数「删完还剩几个叶子」。不能只判断单个图层的数量：
-     * 删一个组时里面可能装着最后一个图层，之前就是这么把画布删空的。 */
+    /* 统计「删除后剩余叶子数」。不能只判断单个图层数量：
+     * 删除一个组时，组内可能包含最后一个图层，此前曾因此把画布删空。 */
     let remain = 0;
     walkLeaves(this.root.children, l => { if (!within(l, [node])) remain++; });
     if (remain === 0) return false;
@@ -292,7 +293,7 @@ export class Doc {
 
     parent.children.splice(i, 1);
 
-    // 选中项落在被删掉的子树里，就换一个
+    // 若选中项位于被删除的子树内，则改选其它节点
     if (within(this.selected, [node]) || this.selected === node) {
       this.selected = parent.children[Math.min(i, parent.children.length - 1)]
         || firstLeaf(this.root.children) || this.root;
@@ -300,7 +301,7 @@ export class Doc {
     if (!this.activeLeaf || within(this.activeLeaf, [node]) || this.activeLeaf === node) {
       this.activeLeaf = firstLeaf(this.root.children);
     }
-    // 画笔必须有落点；真删空了就把选中也退回根
+    // 画笔必须有落点；若确已删空，则将选中项回退至根
     if (!this.activeLeaf) {
       this.activeLeaf = firstLeaf(this.root.children);
       this.selected = this.activeLeaf || this.root;
@@ -310,7 +311,7 @@ export class Doc {
 
   markTileDirty(c, r) { this.dirtyTiles.add(c + ',' + r); }
 
-  /* 按世界坐标标脏（覆盖层按 64×64 的小块汇报，得换算回文档块） */
+  /* 按世界坐标标记脏块（覆盖层按 64×64 小块汇报，需换算回文档块） */
   markRegionDirty(x0, y0, x1, y1) {
     const c0 = Math.max(0, Math.floor(x0 / TILE));
     const c1 = Math.min(Math.ceil(this.w / TILE) - 1, Math.floor((x1 - 1) / TILE));
@@ -319,10 +320,10 @@ export class Doc {
     for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) this.dirtyTiles.add(c + ',' + r);
   }
 
-  /* 把各个图层里积攒的脏块搬到文档级，再统一刷新。 */
+  /* 将各图层累积的脏块汇总到文档级，再统一刷新。 */
   collectDirty() {
     walkLeaves(this.root.children, l => {
-      // 蒙版也要收 —— 只收 l.canvas 的话，在蒙版上画的笔画永远不重合
+      // 蒙版同样需要收集；若只收集 l.canvas，在蒙版上绘制的笔迹将永远不会重合成
       if (l.mask && l.mask.dirty.size) {
         l.mask.dirty.forEach(k => this.dirtyTiles.add(k));
         l.mask.dirty.clear();
@@ -333,7 +334,7 @@ export class Doc {
     });
   }
 
-  /* 全量标脏 = 视口变了、撤销了、图层结构变动了 —— 必须整张重合成。 */
+  /* 全量标记脏块 = 视口变化、撤销、图层结构变动 —— 必须整张重新合成。 */
   markAllDirty() {
     this.dirtyTiles.clear();
     const cols = Math.ceil(this.w / TILE), rows = Math.ceil(this.h / TILE);
@@ -352,17 +353,17 @@ export class Doc {
     return c;
   }
 
-  /* 按树递归合成一块区域。
-   * rx, ry = 目标画布的左上角在世界坐标里的位置（doc.off 是 0,0，块暂存是 x,y）。
-   * 组只有在「不透明度 < 1」或「混合模式不是 normal」时才需要隔离缓冲；
-   * 否则直接摊平，省掉一次 256×256 的搬运。
+  /* 按图层树递归合成单块区域。
+   * rx, ry 为目标画布左上角在世界坐标中的位置（doc.off 为 0,0，块暂存为 x,y）。
+   * 仅当组满足「不透明度 < 1」或「混合模式不是 normal」时才需要隔离缓冲；
+   * 否则直接摊平，省去一次 256×256 的搬运。
    */
-  /* 把某层按 (dx,dy) 偏移画进「当前块」。
+  /* 将某层按 (dx, dy) 偏移绘制到「当前块」。
    *
-   * 注意：不能拿 _drawStack 传进来的 rx/ry 算，那个对 doc.off 一直是 0（世界原点）；
-   * 要用 this._key 反推当前块的坐标，否则算出来永远是画面左上角那一带的源块。
+   * 注意：不能使用 _drawStack 传入的 rx/ry 计算，该值对 doc.off 恒为 0（世界原点）；
+   * 必须由 this._key 反推当前块坐标，否则计算结果始终是画面左上角附近的源块。
    *
-   * 只遍历真正可能重叠的源块（最多 3×3），不会退化成 O(瓦片数)。
+   * 仅遍历可能重叠的源块（最多 3×3），不会退化为 O(瓦片数)。
    */
   _drawOffsetTile(n, ctx, dx, dy, ox = 0, oy = 0) {
     const T = TILE;
@@ -377,18 +378,18 @@ export class Doc {
       for (let c = c0; c <= c1; c++) {
         const src = n.canvas.tiles.get(c + ',' + r);
         if (!src) continue;
-        // ox/oy：目标画布的原点（世界坐标）—— 画进 scratch 时要减掉
+        // ox/oy：目标画布原点（世界坐标），绘制进 scratch 时需减去
         ctx.drawImage(src.canvas, c * T + dx - ox, r * T + dy - oy);
       }
     }
   }
 
   _drawStack(nodes, ctx, rx, ry, depth, scratchFor) {
-    /* 隔离分支用的是 256×256 的 scratch，而瓦片坐标是世界坐标。
-     * 不换算到「当前块」原点的话，非 (0,0) 的块会被画到 scratch 外面 ——
-     * 表现就是「蒙版 / 组不透明度只有左上角那 256px 是对的」。 */
-    /* 坐标由 flushDirty 直接喂进来 —— 每个脏块每帧 split 一次太浪费，
-     * A4 全量重绘时 140 块就是 140 次字符串切分 + 数组分配。 */
+    /* 隔离分支使用 256×256 的 scratch，而瓦片坐标为世界坐标。
+     * 若不换算到「当前块」原点，非 (0,0) 的块将被绘制到 scratch 之外，
+     * 表现为「蒙版 / 组不透明度仅在左上角 256px 范围内正确」。 */
+    /* 坐标由 flushDirty 直接传入 —— 每个脏块每帧执行一次 split 开销过大，
+     * A4 全量重绘时 140 块即产生 140 次字符串切分与数组分配。 */
     const bx = (this._keyC || 0) * TILE;
     const by = (this._keyR || 0) * TILE;
 
@@ -406,9 +407,9 @@ export class Doc {
           ctx.globalAlpha = n.opacity;
           ctx.globalCompositeOperation = n.mode;
           if (off && (dx || dy)) {
-            /* 拖动预览：目标块可能要从**邻居块**取内容。
-             * 只画 this._key 那一块的话，偏移量不是 256 的整数倍时
-             * 块与块之间会裂开、拖影（这就是「拖动后残留」的原因）。 */
+            /* 拖动预览：目标块可能需要从**相邻块**取内容。
+             * 若仅绘制 this._key 对应的块，当偏移量不是 256 的整数倍时，
+             * 块与块之间会出现裂口与拖影（即「拖动后残留」的成因）。 */
             this._drawOffsetTile(n, ctx, dx, dy, rx, ry);
           } else {
             const t = n.canvas.tiles.get(this._key);
@@ -418,8 +419,8 @@ export class Doc {
           continue;
         }
 
-        /* 有蒙版就得隔离：先把这一块画到暂存，再用 destination-in 抠掉蒙版外的部分。
-         * 直接在主画布上 destination-in 会把下面所有图层一起抠掉。 */
+        /* 存在蒙版时必须隔离：先将该块绘制到暂存画布，再用 destination-in 抠除蒙版外部分。
+         * 若直接在主画布上执行 destination-in，会连同下方所有图层一并抠除。 */
         const s = scratchFor(depth);
         const sc = s.getContext('2d');
         sc.setTransform(1, 0, 0, 1, 0, 0);
@@ -439,12 +440,12 @@ export class Doc {
           sc.drawImage(mt.canvas, mt.col * TILE - bx, mt.row * TILE - by);
           sc.globalCompositeOperation = 'source-over';
         }
-        /* 蒙版这块没有瓦片 = 全显示，什么都别做。
-         * 以前这里写的是 clearRect（当成「整块看不见」），后果是：
-         * 蒙版上只擦了一个小地方，其余所有块都被当成「蒙版为空」清掉 ——
-         * 表现就是「加了蒙版一擦，整张画灰飞烟灭」。 */
+        /* 蒙版该块无瓦片即表示全部可见，不做任何处理。
+         * 此处曾使用 clearRect（误作「整块不可见」），后果为：
+         * 蒙版上仅擦除一小块时，其余所有块都被判定为「蒙版为空」而清除，
+         * 表现为「添加蒙版后一擦，整张画布内容消失」。 */
         else {
-          // 保留 sc 里的内容不动
+          // 保留 sc 中的内容不变
         }
 
         ctx.globalAlpha = n.opacity;
@@ -464,8 +465,8 @@ export class Doc {
       sc.globalAlpha = 1;
       sc.globalCompositeOperation = 'source-over';
       sc.clearRect(0, 0, s.width, s.height);
-      /* 递归进 scratch 时把原点挪到当前块：scratch 是 256×256，
-       * 继续传 rx/ry(=0) 的话子层内容会画到世界坐标的位置，跑出画布。 */
+      /* 递归进入 scratch 时将原点移至当前块：scratch 为 256×256，
+       * 若继续传入 rx/ry（=0），子层内容将按世界坐标绘制，从而越出画布。 */
       this._drawStack(n.children, sc, bx, by, depth + 1, scratchFor);
       ctx.globalAlpha = n.opacity;
       ctx.globalCompositeOperation = n.mode;
@@ -473,7 +474,7 @@ export class Doc {
     }
   }
 
-  /* 只重刷脏块到离屏缓冲 */
+  /* 仅将脏块刷新到离屏缓冲 */
   flushDirty() {
     if (this.dirtyTiles.size === 0) return;
     const T = TILE;
@@ -501,7 +502,7 @@ export class Doc {
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
 
-      // 正在画的那一笔叠在最上面
+      // 正在绘制的笔迹叠加在最上层
       if (this.overlay.size) {
         ctx.globalAlpha = this.overlayAlpha;
         for (const o of this.overlay.values()) {
@@ -518,8 +519,8 @@ export class Doc {
     this.dirtyTiles.clear();
   }
 
-  /* 导出用：完整合成一次，并裁剪到画布范围（不出界）。
-   * 这里的隔离缓冲是整张画布大小，只在导出时才会分配。 */
+  /* 导出专用：完整合成一次，并裁剪到画布范围（不越界）。
+   * 此处的隔离缓冲为整张画布大小，仅在导出时分配。 */
   composite(targetCtx, dpr = 1) {
     targetCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     targetCtx.clearRect(0, 0, this.w, this.h);
@@ -539,8 +540,8 @@ export class Doc {
       return c;
     };
 
-    /* 导出不是按块走的，每个图层要把所有块铺满，
-     * 所以这里另写一份 drawAll，不复用 flushDirty 那条按 _key 取的路径。 */
+    /* 导出不按块处理，每个图层需铺满所有块，
+     * 因此单独实现 drawAll，不复用 flushDirty 中按 _key 取块的路径。 */
     const drawAll = (nodes, ctx, depth) => {
       for (let i = nodes.length - 1; i >= 0; i--) {
         const n = nodes[i];
