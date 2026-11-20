@@ -92,3 +92,78 @@ const CASES = {
     assert(v > 0, `无效压力不应返回 0，实际 ${v}`);
   },
 };
+
+/* ---------- 起笔圆点 ----------
+ *
+ * 落笔瞬间的压力是读数毛刺（笔尖刚接触板面时偏高），
+ * 而 libmypaint 会把它记入笔刷状态，影响紧随其后的第一个 dab。
+ * 若照实播种，开头就鼓出一个比线身粗一倍的圆点。
+ *
+ * 实测（落笔 0.95、后续 0.3）：
+ *   修复前  8, 44, 56, 63, 65, 63, 57, 50, 39, 32, 32   ← 鼓到 65px
+ *   修复后  4, 26, 31, 33, 33, 33, 33, 33, 33, 33, 33   ← 平滑到线身
+ */
+
+CASES['起笔不出现粗圆点'] = async ({ achi, assert }) => {
+  const hk = achi.hk;
+  const t0 = Date.now();
+  while (!hk.ready && Date.now() - t0 < 10000) await new Promise(r => setTimeout(r, 100));
+  assert(hk.ready, '引擎应就绪');
+
+  const doc = achi.doc;
+  const layer = doc.activeLeaf.canvas;
+  const view = document.getElementById('view');
+  const r = view.getBoundingClientRect();
+
+  /* 模拟真实落笔：down 压力高，后续立刻降到 0.3 */
+  const cx = r.left + r.width / 2 - 100, cy = r.top + r.height / 2;
+  const ev = (t, p, x, y, b = 1) => new PointerEvent(t, {
+    pointerType: 'pen', pressure: p, buttons: b, bubbles: true,
+    clientX: x, clientY: y, pointerId: 95,
+  });
+
+  view.dispatchEvent(ev('pointerdown', 0.95, cx, cy));
+  for (let i = 1; i <= 8; i++) {
+    await new Promise(rr => setTimeout(rr, 12));
+    view.dispatchEvent(ev('pointermove', 0.3, cx + i * 20, cy - i * 10));
+  }
+  view.dispatchEvent(ev('pointerup', 0.3, cx + 160, cy - 80, 0));
+  await new Promise(rr => requestAnimationFrame(() => requestAnimationFrame(rr)));
+
+  /* 沿笔画方向逐列量厚度 */
+  let minx = Infinity, maxx = -Infinity;
+  for (const t of layer.tiles.values()) {
+    const d = t.ctx.getImageData(0, 0, 256, 256).data;
+    for (let y = 0; y < 256; y++) {
+      for (let x = 0; x < 256; x++) {
+        if (d[(y * 256 + x) * 4 + 3] <= 10) continue;
+        const wx = t.col * 256 + x;
+        if (wx < minx) minx = wx;
+        if (wx > maxx) maxx = wx;
+      }
+    }
+  }
+  assert(maxx > minx, '应画出墨迹');
+
+  const prof = [];
+  for (let x = minx; x <= maxx; x += 8) {
+    let top = -1, bot = -1;
+    for (let y = 0; y < doc.h; y++) {
+      const c = Math.floor(x / 256), rr = Math.floor(y / 256);
+      const t = layer.tiles.get(c + ',' + rr);
+      if (!t) continue;
+      const d = t.ctx.getImageData(x - c * 256, y - rr * 256, 1, 1).data;
+      if (d[3] > 10) { if (top < 0) top = y; bot = y; }
+    }
+    prof.push(top < 0 ? 0 : bot - top + 1);
+  }
+
+  /* 线身厚度取中位数，开头不应明显超过它 */
+  const body = prof.filter(v => v > 0);
+  body.sort((a, b) => a - b);
+  const median = body[Math.floor(body.length / 2)];
+
+  const headMax = Math.max(...prof.slice(1, 5));
+  assert(headMax < median * 1.4,
+    `起笔不应鼓出粗圆点：开头 ${headMax}px vs 线身 ${median}px`);
+};

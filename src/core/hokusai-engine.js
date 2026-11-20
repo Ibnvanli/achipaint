@@ -199,9 +199,18 @@ export class HokusaiEngine {
     this.active = true;
     this.paintedTiles = 0;
 
-    // 首次 strokeTo 仅初始化状态，不落笔（libmypaint 的行为）
+    /* 首次 strokeTo 仅播种状态，不落笔（libmypaint 的行为）。
+     *
+     * 但播种用的压力会被 libmypaint 记入笔刷状态，影响紧随其后的第一个 dab。
+     * 落笔瞬间的压力是读数毛刺（笔尖刚接触板面时偏高），若照实播种，
+     * 第一个 dab 就会按峰值画成一个比线身粗一倍的圆点。
+     *
+     * 因此播种时压住压力：取 0.25 与落笔值的较小者。
+     * 0.25 相当于「轻触」，画出的第一个 dab 不会比线身更粗；
+     * 后续 move 会立刻带回真实压力，不影响整笔的压感表现。 */
+    const seedPressure = Math.min(pressure, 0.25);
     const p = this.stab.push(x, y);
-    this.canvas.strokeTo(b, p.x, p.y, pressure, opts.tiltX || 0, opts.tiltY || 0, 0.0001);
+    this.canvas.strokeTo(b, p.x, p.y, seedPressure, opts.tiltX || 0, opts.tiltY || 0, 0.0001);
     this.pump();
     return true;
   }
