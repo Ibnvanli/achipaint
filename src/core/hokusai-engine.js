@@ -242,10 +242,13 @@ export class HokusaiEngine {
 
     // 单次点击也应产生一个点。多数 .myb 按「走过的距离」采样，
     // 指针不动时不会落任何点；dabs_per_second 为 0 的笔刷则完全无响应。
-    // 此处补一小段位移（小于一个笔尖直径），视觉上仍呈现为单点。
+    //
+    // 这里的位移只用于「让按距离采样的笔刷认为走过了一小步」，越小越好。
+    // 曾用 r * 0.55（半径的 55%），半径 40px 时点的中心会偏出点击位置 22px ——
+    // 表现为落笔处莫名多出一个偏离笔尖的墨点。
     if (this.paintedTiles === 0) {
-      const r = this.radiusPx;
-      this.canvas.strokeTo(this.current, this.lastX + r * 0.55, this.lastY,
+      const nudge = Math.min(1, this.radiusPx * 0.02);
+      this.canvas.strokeTo(this.current, this.lastX + nudge, this.lastY,
         this.lastPressure, 0, 0, 0.016);
       this.canvas.finishStroke(this.current);
       this.pump();
