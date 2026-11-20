@@ -432,7 +432,10 @@ html.electron .titlebar select {
 .lay-row {
   position: relative;
   display: flex; align-items: center; gap: var(--s-1);
-  height: 24px; padding-right: var(--s-1);
+  /* 行高必须容纳 32px 缩略图，另留 2px 上下余量。
+   * 此前写死 24px 而缩略图是 32px，导致缩略图溢出 8px、
+   * 压到下一行上（图层行与蒙版行尤其明显）。 */
+  min-height: 34px; padding-right: var(--s-1);
   border-radius: var(--r-s);
   font-size: var(--t-s); color: var(--fg-1);
   cursor: default;
