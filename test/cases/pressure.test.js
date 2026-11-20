@@ -39,20 +39,28 @@ const CASES = {
     }
   },
 
-  /* 报成 pen 但压力恒定 → 判定为无压感，按满压 */
-  '冒充 pen 但压力恒定按满压': async ({ achi, assert, assertEq }) => {
-    const { pressureOf, resetPressureObs } = achi;
-    resetPressureObs();
+  /* 报成 pen 但压力恒定：
+   * 笔画过程中照实画（不中途切换），笔画结束后判定为无压感，
+   * 之后的笔按满压。 */
+  '压力恒定的 pen 在笔画结束后判为无压感': async ({ achi, assert }) => {
+    const { pressureOf, resetPressureObs, settlePressureObs } = achi;
+    const before = achi.penPressureUsable;
+    achi.penPressureUsable = null;
 
-    /* 连续 6 个事件都是 0.5，中途不变化 */
+    resetPressureObs();
     const got = [];
     for (let i = 0; i < 6; i++) got.push(pressureOf(window.__t.ev('pen', 0.5)));
 
-    /* 前两个样本还判不出来，会先用 0.5；从第三个起应切到满压 */
-    assertEq(got[got.length - 1], 1,
-      `压力恒定时应按满压，实际 ${got[got.length - 1]}`);
-    assertEq(got.filter(v => v === 1).length >= 3, true,
-      `多数事件应按满压，实际取值 ${got.join(',')}`);
+    /* 笔画内必须一致 —— 中途切换会造成线条粗细突变 */
+    const uniq = [...new Set(got)];
+    assert(uniq.length === 1, `笔画内压力应一致，实际 ${got.join(',')}`);
+
+    /* 结算后判定为无压感 */
+    settlePressureObs();
+    assert(achi.penPressureUsable === false,
+      `结算后应判定为无压感，实际 ${achi.penPressureUsable}`);
+
+    achi.penPressureUsable = before;
   },
 
   /* 鼠标：压力恒 0.5，一律满压 */
@@ -87,20 +95,23 @@ const CASES = {
     assert(v > 0, `无效压力不应返回 0（会导致零宽笔迹），实际 ${v}`);
   },
 
-  /* 每笔开始时观测状态必须重置，否则上一笔的结论会污染这一笔 */
-  '每笔重新观测压力': async ({ achi, assert, assertEq }) => {
+  /* 判定为无压感后，只要又观测到压力变化，应立刻恢复采信 */
+  '设备判定可自愈': async ({ achi, assert }) => {
     const { pressureOf, resetPressureObs } = achi;
+    const before = achi.penPressureUsable;
 
-    /* 第一笔：压力恒定，判定无压感 */
+    achi.penPressureUsable = false;      // 模拟「已判为无压感」
     resetPressureObs();
-    for (let i = 0; i < 6; i++) pressureOf(window.__t.ev('pen', 0.5));
-    assertEq(pressureOf(window.__t.ev('pen', 0.5)), 1, '第一笔应判为无压感');
 
-    /* 第二笔：重置后压力有变化，应立刻重新采信 */
-    resetPressureObs();
-    const v = pressureOf(window.__t.ev('pen', 0.2));
-    assert(Math.abs(v - 0.2) < 0.001,
-      `重置后应重新采信真实压力 0.2，实际 ${v}`);
+    const got = [];
+    for (const p of [0.2, 0.8, 0.3, 0.7]) got.push(pressureOf(window.__t.ev('pen', p)));
+
+    assert(achi.penPressureUsable === true,
+      '观测到压力变化后应恢复为可用');
+    assert(Math.abs(got[1] - 0.8) < 0.001,
+      `恢复后应采信真实压力，实际 ${got[1]}`);
+
+    achi.penPressureUsable = before;
   },
 
   /* 画布必须自己接管指针手势，否则浏览器会中断笔迹、丢弃压力 */
@@ -193,4 +204,83 @@ CASES['合并事件压力有效时优先采用'] = async ({ achi, assert }) => {
   resetPressureObs();
   const b = pressureOf({ pointerType: 'pen', pressure: 0.3 }, 0.9);
   assert(Math.abs(b - 0.3) < 0.001, `应优先用自身压力 0.3，实际 ${b}`);
+};
+
+/* ---------- 笔画中途不得切换压力 ----------
+ *
+ * 曾经的实现按「压力是否变化」实时判断：前几个样本不足以判断时用真实值，
+ * 样本够了判定为「恒定」，立刻切到满压。
+ * 结果：画一条用力稳定的线，前两点细、之后全粗，末端出现一个明显粗块。
+ *
+ * 判定改为在一笔结束之后结算，笔画过程中压力必须连续。
+ */
+
+/* 构造恒定压力的 pen 事件序列，返回引擎收到的压力 */
+function simulateStroke(hk, view, pressure, steps = 12) {
+  const seen = [];
+  const oB = hk.begin.bind(hk), oM = hk.move.bind(hk);
+  hk.begin = (x, y, p, o) => { seen.push(+p.toFixed(3)); return oB(x, y, p, o); };
+  hk.move = (x, y, p, o) => { seen.push(+p.toFixed(3)); return oM(x, y, p, o); };
+
+  try {
+    const r = view.getBoundingClientRect();
+    const cx = r.left + r.width / 2 - 120;
+    const cy = r.top + r.height / 2;
+    const mk = (t, p, x, y) => new PointerEvent(t, {
+      pointerType: 'pen', pressure: p, buttons: 1, bubbles: true,
+      clientX: x, clientY: y, pointerId: 11,
+    });
+
+    view.dispatchEvent(mk('pointerdown', pressure, cx, cy));
+    for (let i = 1; i <= steps; i++) {
+      view.dispatchEvent(mk('pointermove', pressure, cx + i * 8, cy + i * 2));
+    }
+    view.dispatchEvent(new PointerEvent('pointerup', {
+      pointerType: 'pen', pressure, buttons: 0, bubbles: true,
+      clientX: cx + steps * 8, clientY: cy + steps * 2, pointerId: 11,
+    }));
+  } finally {
+    hk.begin = oB; hk.move = oM;
+  }
+  return seen;
+}
+
+CASES['恒压笔画不出现中途突变'] = async ({ achi, assert }) => {
+  const hk = achi.hk;
+  if (!hk.ready) return;
+
+  const before = achi.penPressureUsable;
+  achi.penPressureUsable = null;   // 强制回到「未判定」状态
+
+  const view = document.getElementById('view');
+  const seq = simulateStroke(hk, view, 0.3);
+
+  /* 整笔必须同一个压力，不能在某个点突然跳到 1 */
+  const uniq = [...new Set(seq)];
+  assert(uniq.length === 1,
+    `整笔压力应保持一致，实际出现 ${uniq.length} 种取值：${seq.join(',')}`);
+
+  achi.penPressureUsable = before;
+};
+
+/* 一笔结束后才结算设备判定，且不影响已完成的那一笔 */
+CASES['笔画结束才结算设备判定'] = async ({ achi, assert, assertEq }) => {
+  const hk = achi.hk;
+  if (!hk.ready) return;
+
+  const before = achi.penPressureUsable;
+  achi.penPressureUsable = null;
+
+  const view = document.getElementById('view');
+  /* 第一笔恒压：过程中全部 0.3，结束后判定为无压感 */
+  const first = simulateStroke(hk, view, 0.3);
+  assertEq([...new Set(first)].length, 1, '第一笔内部压力应一致');
+  assertEq(achi.penPressureUsable, false, '恒压一笔结束后应判定为无压感');
+
+  /* 第二笔：设备已判定无压感，按满压 */
+  const second = simulateStroke(hk, view, 0.3);
+  assertEq(achi.penPressureUsable, false, '判定应保持');
+  assert(second[0] > 0.9, `已判定无压感时应按满压，实际 ${second[0]}`);
+
+  achi.penPressureUsable = before;
 };

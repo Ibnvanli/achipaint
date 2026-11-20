@@ -292,15 +292,25 @@ function redraw() {
  */
 const pressureObs = { min: 1, max: 0, n: 0 };
 
+/* 本设备是否提供可用的压感。null = 尚未判定。
+ *
+ * 判定放在**一笔结束之后**，绝不在笔画中途切换 ——
+ * 中途切换会让线条粗细突变，表现为末端突然出现一个粗块（拖尾）。
+ * 曾在 pressureOf 里按「压力是否变化」实时判断，画一条恒压的线时
+ * 前两个点细、之后全粗，就是这样产生的。
+ */
+let penPressureUsable = null;
+
 /* 每笔开始时重置观测。 */
 function resetPressureObs() {
   pressureObs.min = 1; pressureObs.max = 0; pressureObs.n = 0;
 }
 
-/* 压力是否一直在变化。样本不足时无法判断，按「有压感」处理 ——
- * 宁可前几个点用真实值，也不要一上来就切到满压把笔迹画糊。 */
-function pressureVaries() {
-  return pressureObs.n < 3 || (pressureObs.max - pressureObs.min) > 0.01;
+/* 一笔结束时结算，更新对设备的判定。
+ * 样本太少（点一下、极短划）不下结论，避免误判。 */
+function settlePressureObs() {
+  if (pressureObs.n < 4) return;
+  penPressureUsable = (pressureObs.max - pressureObs.min) > 0.01;
 }
 
 function pressureOf(e, fallback = null) {
@@ -320,11 +330,21 @@ function pressureOf(e, fallback = null) {
   pressureObs.n++;
 
   if (e.pointerType === 'pen') {
-    /* pen 分支：先看压力是否真的在变。
-     * 「名义上是 pen」不等于「真的给了压力数据」—— 有的驱动只报 0.5。
-     * 恒定 0.5 在 .myb 的 radius 曲线上只对应 -0.35，直径缩减一半以上，
-     * 看起来就是没有压感。这种情况按满压画，至少不是一根发丝。 */
-    if (!valid || !pressureVaries()) return 1;
+    if (!valid) return 1;                    // 本事件没有压力数据
+
+    /* 已判定该设备不提供压感：按满压画。
+     * 但只要这一笔又观测到压力变化，立刻改回来 ——
+     * 用户换了笔或换了驱动时不必重启应用。 */
+    if (penPressureUsable === false) {
+      if (pressureObs.max - pressureObs.min > 0.01) {
+        penPressureUsable = true;
+        return p;
+      }
+      return 1;
+    }
+
+    /* 尚未判定或已判定可用：一律采信真实压力。
+     * 即使压力恒定（画者用力稳定），也应照实画，不能中途换成满压。 */
     return p;
   }
 
@@ -623,6 +643,7 @@ function endStroke() {
   }
   if (hk.active) {
     hk.end();
+    settlePressureObs();     // 一笔结束才结算设备是否有压感
     if (pending) history.commit(pending);
     op('抬笔', tool, '历史 ' + history.stack.length);
     refreshThumbs();
@@ -633,6 +654,7 @@ function endStroke() {
   }
   if (!stroke) return;
   stroke.end();
+  settlePressureObs();
   if (pending) history.commit(pending);
   op('抬笔', tool, '历史 ' + history.stack.length);
   refreshThumbs();
@@ -2168,6 +2190,10 @@ window.__achi = {
   /* 压力判定的测试入口：pressureOf 依赖本笔的观测状态，
    * 因此同时暴露重置函数，便于用例独立验证每一种设备情形。 */
   pressureOf, resetPressureObs,
+  /* 设备压感判定的读写口：跨笔画学习的状态，测试需要能重置与查看 */
+  get penPressureUsable() { return penPressureUsable; },
+  set penPressureUsable(v) { penPressureUsable = v; },
+  settlePressureObs,
   /* 浮动选区：供测试与调试脚本走真实路径（拖动本身由手势层驱动） */
   liftSelection: () => liftSelection(),
   commitFloating: () => commitFloating(),
