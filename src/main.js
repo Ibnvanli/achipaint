@@ -1,5 +1,5 @@
-/* 装配：把核心、UI、插件接起来
- * 热路径（pointer→stroke→composite）全同步，中间不 await、不经过插件。
+/* 装配：将核心、UI 与插件连接起来
+ * 热路径（pointer → stroke → composite）全部同步执行，中间不 await，也不经过插件。
  */
 import { Doc, TILE } from './core/canvas.js';
 import { Brush, Stroke } from './core/brush.js';
@@ -18,17 +18,17 @@ import pngExporter from './plugins/export-png.js';
 
 const $ = id => document.getElementById(id);
 
-/* Electron 壳里给自绘标题栏让出红绿灯的位置，并把它变成可拖动区域。
- * 浏览器里没有这个类，所以网页版布局一个像素都不变。 */
+/* 在 Electron 壳中为自绘标题栏让出窗口控制按钮的位置，并将其设为可拖动区域。
+ * 浏览器环境中不存在该类，因此网页版布局不受任何影响。 */
 if (/\.Electron/i.test(navigator.userAgent) || navigator.userAgent.includes('Electron')) {
   document.documentElement.classList.add('electron');
 }
 
 /* ---------- 状态 ---------- */
-/* 尺寸从启动页带过来：index.html?w=2480&h=3508。
- * 没带参数就退回 A4@300dpi，保证直接打开 index.html 也能用。 */
+/* 尺寸由启动页传入：index.html?w=2480&h=3508。
+ * 未传参数时回退至 A4@300dpi，保证直接打开 index.html 仍可正常使用。 */
 const qs = new URLSearchParams(location.search);
-/* 链接里带了尺寸就直接进画布（启动页会跳过），否则先弹启动浮层 */
+/* URL 中带尺寸时直接进入画布（跳过启动浮层），否则先显示启动浮层 */
 const HAS_SIZE = qs.has('w') && qs.has('h');
 const DW = Math.max(64, Math.min(12000, parseInt(qs.get('w'), 10) || 2480));
 const DH = Math.max(64, Math.min(12000, parseInt(qs.get('h'), 10) || 3508));
@@ -44,8 +44,8 @@ let tool = 'brush';
 let stroke = null;
 let pending = null;
 
-/* hokusai 外置笔刷引擎。没载入完 / 载入失败时一律退回内置 Stroke，
- * 保证「画不出线」这种事不会因为引擎换了再发生一次。 */
+/* hokusai 外置笔刷引擎。未载入完成或载入失败时统一回退至内置 Stroke，
+ * 确保「无法绘制线条」这一问题不会因更换引擎而重新出现。 */
 const hk = new HokusaiEngine(doc);
 const HOKUSAI_PRESETS = {
   brush: '基础',
@@ -56,16 +56,17 @@ const HOKUSAI_PRESETS = {
 
 /* ---------- 视图 ---------- */
 const view = $('view');
-// desynchronized: 让浏览器跳过一部分合成同步，显著降低笔迹上屏延迟。
-// 代价是极端情况下可能撕裂，但对绘画来说延迟比撕裂重要得多。
+// desynchronized：使浏览器跳过部分合成同步，显著降低笔迹上屏延迟。
+// 代价是极端情况下可能出现画面撕裂；对绘画场景而言，延迟比撕裂更不可接受。
 const vctx = view.getContext('2d', { desynchronized: true, alpha: false });
 view.style.touchAction = 'none';   // 防止触屏/笔被当作滚动手势
-/* 上限 2 在 Retina 上意味着视口画布有 2200×1650 物理像素，
- * 每帧要把这一整块作为图层内容交给系统合成 —— WKWebView 在这上面明显吃亏
- * （实测帧率 37fps，Chromium 同尺寸能到 60）。降到 1.5 换帧率，肉眼几乎无差。 */
-/* 上限 2 在 Retina 上意味着视口画布 2200×1650 物理像素，
- * 每帧要把整块作为图层内容交给系统合成 —— 实测帧间隔 21.4ms（47fps），
- * 掉到 60fps 以下就会「不跟手」。降到 1.5 换帧率，肉眼几乎无差。 */
+/* 上限 2 在 Retina 上意味着视口画布为 2200×1650 物理像素，
+ * 每帧需将整块作为图层内容交由系统合成。WKWebView 在此场景明显劣化
+ * （实测帧率 37fps，Chromium 同尺寸可达 60fps）。降至 1.5 换取帧率，肉眼几乎无差别。
+ */
+/* 上限 2 在 Retina 上意味着视口画布为 2200×1650 物理像素，
+ * 每帧需将整块交由系统合成 —— 实测帧间隔 21.4ms（47fps），
+ * 低于 60fps 即表现为输入滞后。降至 1.5 换取帧率，肉眼几乎无差别。 */
 let dpr = Math.min(window.devicePixelRatio || 1, 1.5);
 
 function resize() {
@@ -77,17 +78,17 @@ function resize() {
   redraw();
 }
 
-/* ---------- 渲染：每帧一次，只搬离屏缓冲 ---------- */
+/* ---------- 渲染：每帧一次，仅搬运离屏缓冲 ---------- */
 let rafId = 0;
 let needFrame = false;
-/* 用「有没有挂着一帧」这个布尔量来去重，而不是靠 rafId 是否为 0。
- * WKWebView 在页面刚加载完、窗口还没真正上屏时，会把已排队的 rAF 回调丢掉；
- * 如果这时拿 rafId 当锁，锁就永远解不开了 —— 之后每次 requestPaint 都直接 return，
- * 画面再也不更新。真机上表现为「画得出来但看着发闷」。 */
+/* 使用「是否存在挂起帧」的布尔量进行去重，而非依赖 rafId 是否为 0。
+ * WKWebView 在页面刚加载完成、窗口尚未实际上屏时会丢弃已排队的 rAF 回调；
+ * 若此时以 rafId 作为锁，该锁将永远无法释放 —— 此后每次 requestPaint 都直接返回，
+ * 画面不再更新。真机表现为「可以绘制但画面不刷新」。 */
 let framePending = false;
 let frameQueuedAt = 0;
 
-/* 透明背景的棋盘格。按 8px 一格画一张小图再平铺，比每帧画几千个矩形便宜。 */
+/* 透明背景的棋盘格。按 8px 一格生成一张小图再平铺，开销低于每帧绘制数千个矩形。 */
 let _checker = null;
 function checkerPattern(ctx) {
   if (_checker) return _checker;
@@ -103,8 +104,8 @@ function checkerPattern(ctx) {
   return _checker;
 }
 
-/* 性能探针：记录每帧合成耗时，以及「最近一次指针事件 → 这一帧画完」的间隔。
- * 只在 window.__achiPerf 存在时记录，默认不占开销。 */
+/* 性能探针：记录每帧合成耗时，以及「最近一次指针事件到该帧绘制完成」的间隔。
+ * 仅在 window.__achiPerf 存在时记录，默认不产生开销。 */
 const perfSamples = [];
 let lastPointerAt = 0;
 let lastPaintAt = 0;
@@ -127,27 +128,27 @@ function paint() {
   framePending = false;
   perfMark._t0 = performance.now();
 
-  /* 把攒了一帧的笔迹先搬进覆盖层，再合成。
-   * 顺序不能反：flushDirty 需要读 overlay。 */
+  /* 先将本帧累积的笔迹搬入覆盖层，再执行合成。
+   * 顺序不可颠倒：flushDirty 需要读取 overlay。 */
   if (hk.active) hk.flush();
 
-  // 先把脏块合进离屏缓冲（只处理变过的块）
+  // 先将脏块合成进离屏缓冲（仅处理发生变化的块）
   doc.collectDirty();
   doc.flushDirty();
 
   const r = $('stage').getBoundingClientRect();
   vctx.setTransform(1, 0, 0, 1, 0, 0);
-  // alpha:false 的画布不能用 clearRect（会留黑），改填背景色
+  // alpha:false 的画布不可使用 clearRect（会残留黑色），改为填充背景色
   vctx.fillStyle = '#14161a';
   vctx.fillRect(0, 0, view.width, view.height);
   vctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   const { x, y, zoom } = doc.view;
 
-  /* 关键优化：只画「视口里看得见的那一小块源区域」。
-   * 以前是 vctx.drawImage(doc.off, 0, 0) —— 每帧把整张 2480×3508
-   * 缓冲（8.7 兆像素）完整缩放一遍，M1 也扛不住，手感就糊了。
-   * 现在算出视口在文档坐标里的矩形，只取这一块去画。
+  /* 关键优化：仅绘制视口内可见的源区域。
+   * 原实现为 vctx.drawImage(doc.off, 0, 0) —— 每帧将整张 2480×3508
+   * 缓冲（870 万像素）完整缩放一次，性能无法承受，导致输入响应变差。
+   * 现改为计算视口在文档坐标中的矩形，仅绘制该区域。
    */
   const r2 = $('stage').getBoundingClientRect();
   const viewLeft = -x / zoom;            // 视口左上角在文档里的坐标
@@ -155,7 +156,7 @@ function paint() {
   const viewW = r2.width / zoom;
   const viewH = r2.height / zoom;
 
-  // 与文档范围求交，并留 1px 余量避免边缘缝
+  // 与文档范围求交，并保留 1px 余量以避免边缘缝隙
   const sx = Math.max(0, Math.floor(viewLeft) - 1);
   const sy = Math.max(0, Math.floor(viewTop) - 1);
   const ex = Math.min(doc.w, Math.ceil(viewLeft + viewW) + 1);
@@ -165,7 +166,7 @@ function paint() {
     vctx.translate(x, y);
     vctx.scale(zoom, zoom);
 
-    // 纸底只画可见那块。透明背景铺棋盘格，否则铺白。
+    // 纸底仅绘制可见区域。透明背景平铺棋盘格，否则填充白色。
     if (doc.background === 'transparent') {
       const pat = checkerPattern(vctx);
       vctx.fillStyle = pat || '#ffffff';
@@ -177,7 +178,7 @@ function paint() {
     vctx.imageSmoothingEnabled = zoom < 1;
     vctx.drawImage(doc.off, sx, sy, ex - sx, ey - sy, sx, sy, ex - sx, ey - sy);
 
-    // 浮动选区画在最上面，跟手走
+    // 浮动选区绘制在最上层，随指针移动
     if (floating) {
       const fcx = floating.x + floating.w / 2;
       const fcy = floating.y + floating.h / 2;
@@ -188,8 +189,8 @@ function paint() {
       vctx.drawImage(floating.canvas, -floating.w / 2, -floating.h / 2);
       vctx.restore();
 
-      /* 变换框：跟内容一起转的虚线框 + 四角手柄。
-       * 这才是「选中了」的可视信号 —— 只有一个底部滑块的话，看不出选中了哪一块。 */
+      /* 变换框：随内容一同旋转的虚线框 + 四角手柄。
+       * 这是「已选中」的视觉标识 —— 若仅有底部滑块，无法判断选中了哪一区域。 */
       vctx.save();
       vctx.translate(fcx, fcy);
       vctx.rotate(floating.angle * Math.PI / 180);
@@ -216,7 +217,7 @@ function paint() {
     vctx.lineWidth = 1 / zoom;
     vctx.strokeRect(0, 0, doc.w, doc.h);
 
-    // 框选：拖拽中的实时框 + 已确定的框
+    // 框选：拖拽中的实时框与已确定的选框
     const sel = (gesture && gesture.kind === 'select' && gesture.rect) ? gesture.rect : doc.selection;
     if (sel && sel.x1 > sel.x0 && sel.y1 > sel.y0) {
       vctx.save();
@@ -237,28 +238,28 @@ function paint() {
   perfMark();
 }
 
-/* 请求一帧：合并同一帧内的多次请求，绝不重复绘制 */
+/* 请求一帧：合并同一帧内的多次请求，不重复绘制 */
 function requestPaint() {
   const now = performance.now();
-  /* 排队超过 400ms 还没画出来，说明那一帧被丢了（WKWebView 在页面刚加载完、
-   * 窗口还没上屏时会把已排队的 rAF 回调吞掉）。这时候必须重排，
-   * 否则标志位永远卡着，后续所有请求都被去重掉，画面彻底不更新。 */
+  /* 排队超过 400ms 仍未绘制，说明该帧已被丢弃（WKWebView 在页面刚加载完成、
+   * 窗口尚未上屏时会吞掉已排队的 rAF 回调）。此时必须重新排队，
+   * 否则标志位将永久卡住，后续所有请求都会被去重，画面完全停止更新。 */
   if (framePending && now - frameQueuedAt < 400) return;
   framePending = true;
   frameQueuedAt = now;
   rafId = requestAnimationFrame(paint);
 }
 
-/* 完整重绘（视图变化时才用，代价大） */
+/* 完整重绘（仅在视图变化时使用，开销较大） */
 function redraw() {
   doc.markAllDirty();
   requestPaint();
 }
 
 /* 鼠标没有压感，e.pressure 恒为 0.5。
- * 直接喂给 .myb 笔刷会得到一条发丝线 —— 人家的压力曲线是按 0~1 设计的，
- * 0.5 在 radius 曲线上只有 -0.35，直径直接砍一半还多。
- * 所以只有笔才用真实压力，鼠标一律按满压。 */
+ * 直接传给 .myb 笔刷会得到极细的线条 —— 其压力曲线按 0~1 设计，
+ * 0.5 在 radius 曲线上仅对应 -0.35，直径缩减超过一半。
+ * 因此仅压感笔使用真实压力，鼠标统一按满压处理。 */
 function pressureOf(e) {
   if (e.pointerType === 'pen') return e.pressure > 0 ? e.pressure : 0.5;
   return 1;
@@ -277,16 +278,16 @@ function toDoc(e) {
 
 
 view.addEventListener('pointerdown', e => {
-  // 只认左键（笔尖也是 0）。右键/中键不该落笔
+  // 仅接受左键（笔尖同样为 0）。右键与中键不应落笔
   if (e.button !== undefined && e.button !== 0) return;
   lastPointerAt = performance.now();
-  // 脚本合成的 PointerEvent 没有真实 pointer 可捕获，会抛 NotFoundError。
-  // 真机上捕获失败也不该让整个落笔流程断掉。
+  // 脚本合成的 PointerEvent 没有真实 pointer 可捕获，会抛出 NotFoundError。
+  // 即使在真机上捕获失败，也不应中断整个落笔流程。
   try { view.setPointerCapture(e.pointerId); } catch { /* 合成事件或已释放 */ }
   const p = toDoc(e);
   const pressure = pressureOf(e);
 
-  /* 非绘画工具：先接走，别进下面的笔画流程 */
+  /* 非绘画工具：优先处理并返回，不进入后续笔画流程 */
   if (tool === 'hand') {
     gesture = { kind: 'hand', cx: e.clientX, cy: e.clientY, vx: doc.view.x, vy: doc.view.y };
     return;
@@ -296,7 +297,7 @@ view.addEventListener('pointerdown', e => {
     return;
   }
   if (tool === 'select') {
-    // 已经浮着一块：在它里面就拖，在外面就落下并重新框选
+    // 已存在浮动选区：在其范围内则拖动，在外部则先落回并重新框选
     if (floating) {
       if (p.x >= floating.x && p.x <= floating.x + floating.w
         && p.y >= floating.y && p.y <= floating.y + floating.h) {
@@ -306,7 +307,7 @@ view.addEventListener('pointerdown', e => {
       commitFloating();
     }
 
-    // 有选区，且点在选区里 → 拎起来
+    // 存在选区且落点在选区内 → 提取该区域
     const sel = doc.selection;
     if (sel && p.x >= sel.x0 && p.x <= sel.x1 && p.y >= sel.y0 && p.y <= sel.y1) {
       if (liftSelection()) {
@@ -323,7 +324,7 @@ view.addEventListener('pointerdown', e => {
     const node = doc.layer;
     const bounds = node ? boundsOf(node.canvas) : null;
 
-    /* 已经浮着一块：在它里面就继续拖，否则先落下 */
+    /* 已存在浮动选区：在其范围内则继续拖动，否则先落回 */
     if (floating) {
       if (p.x >= floating.x && p.x <= floating.x + floating.w
         && p.y >= floating.y && p.y <= floating.y + floating.h) {
@@ -333,8 +334,8 @@ view.addEventListener('pointerdown', e => {
       commitFloating();
     }
 
-    /* 点中哪一笔就拎哪一笔 —— 用连通块近似「一笔」。
-     * 点空白处（没连通内容）才退回整层移动。 */
+    /* 点中哪一笔即提取哪一笔 —— 以连通块近似「一笔」。
+     * 仅在点击空白处（无可连通内容）时回退至整层移动。 */
     if (!e.altKey && node) {
       const cb = connectedBounds(node.canvas, p.x, p.y);
       if (cb) {
@@ -348,9 +349,9 @@ view.addEventListener('pointerdown', e => {
     }
 
     /* 按住 ⌥ 拖动 = 绕内容中心旋转。
-     * 用包围盒中心而不是画布中心 —— 内容偏在一角时，绕画布中心转会甩出去。 */
+     * 使用包围盒中心而非画布中心 —— 内容偏向一角时，绕画布中心旋转会将其甩出视野。 */
     if (e.altKey && bounds) {
-      // 浮着一块就转这一块，否则才转整层
+      // 存在浮动选区则旋转该选区，否则旋转整层
       const cx = floating ? floating.x + floating.w / 2 : (bounds.x0 + bounds.x1) / 2;
       const cy = floating ? floating.y + floating.h / 2 : (bounds.y0 + bounds.y1) / 2;
       gesture = {
@@ -368,15 +369,15 @@ view.addEventListener('pointerdown', e => {
 
   const layer = doc.paintTarget;
   if (!layer) return;
-  // 蒙版上画的是「透明度」，颜色固定白色，只有 alpha 有意义
-  /* 蒙版是 alpha 通道：alpha=255 显示、0 遮住。
-   * 但用户（和 PS）的直觉是「涂黑就遮住」，所以按笔刷颜色的**亮度**换算 alpha：
-   * 黑色 → 全遮，白色 → 全显，灰色 → 半透明。 */
-  // 蒙版上只画 alpha：一律白色，靠 erase 决定是 255 还是 0
+  // 蒙版上绘制的是「透明度」，颜色固定为白色，仅 alpha 有意义
+  /* 蒙版为 alpha 通道：alpha=255 显示，0 遮住。
+   * 但用户（及 Photoshop）的直觉是「涂黑即遮住」，因此按笔刷颜色的**亮度**换算 alpha：
+   * 黑色 → 全部遮住，白色 → 全部显示，灰色 → 半透明。 */
+  // 蒙版上仅绘制 alpha：统一使用白色，由 erase 决定取 255 还是 0
   const paintBrush = doc.maskMode ? { ...brush, color: '#ffffff' } : brush;
 
   if (tool === 'pick') {
-    // 吸色：读合成后的像素
+    // 吸色：读取合成后的像素
     const r = view.getBoundingClientRect();
     const px = Math.round((e.clientX - r.left) * dpr);
     const py = Math.round((e.clientY - r.top) * dpr);
@@ -386,24 +387,24 @@ view.addEventListener('pointerdown', e => {
     return;
   }
 
-  // 橡皮：Stroke 自己走 destination-out
-  // 开笔零成本：不拍任何像素，只建一个空记录。
-  // 真正动到某块时才给它拍快照（Stroke 里的 onFirstTouch 回调）。
+  // 橡皮：由 Stroke 内部执行 destination-out
+  // 开笔零成本：不拍摄任何像素，仅创建空记录。
+  // 仅在实际写入某块时才为该块拍摄快照（Stroke 中的 onFirstTouch 回调）。
   pending = history.beginStroke(layer);
 
-  /* 画笔走 hokusai（.myb 笔刷）；橡皮、蒙版模式、以及引擎没就位时都走内置引擎。
-   * 蒙版必须走内置的：hokusai 只认 HSV 颜色，做不出 alpha，也就擦不掉。 */
+  /* 画笔使用 hokusai（.myb 笔刷）；橡皮、蒙版模式以及引擎尚未就位时使用内置引擎。
+   * 蒙版必须使用内置引擎：hokusai 仅接受 HSV 颜色，无法产生 alpha，因而无法擦除。 */
   if (tool === 'brush' && hk.ready && !doc.maskMode) {
     const ok = hk.begin(p.x, p.y, pressure, tiltOpts(e, p));
     if (ok) { markDirty(true); op('落笔', tool, Math.round(p.x) + ',' + Math.round(p.y)); requestPaint(); bus.emit('stroke:begin', { x: p.x, y: p.y }); return; }
   }
 
   stroke = new Stroke(paintBrush, layer);
-  // 落笔时把「这一笔可能覆盖的区域」原样抓下来；笔移动越界会继续补拍
+  // 落笔时将该笔可能覆盖的区域原样拍摄；笔移动越界时继续补拍
   stroke.onRegion = (x0, y0, x1, y1) => history.grabRegion(pending, x0, y0, x1, y1);
   stroke.clip = doc.selection;
-  /* 蒙版是 alpha 通道（255=显示，0=遮住）。
-   * 工具语义要反过来才对得上直觉：在蒙版上「画」= 擦掉内容，橡皮才是恢复。 */
+  /* 蒙版为 alpha 通道（255 = 显示，0 = 遮住）。
+   * 工具语义需反转才符合直觉：在蒙版上「绘制」即擦除内容，橡皮才是恢复。 */
   const eraseWanted = doc.maskMode ? (tool !== 'eraser') : (tool === 'eraser');
   if (eraseWanted) stroke.erase = true;
   stroke.begin(p.x, p.y, pressure);   // begin 内部已落第一个点
@@ -411,8 +412,8 @@ view.addEventListener('pointerdown', e => {
   bus.emit('stroke:begin', { x: p.x, y: p.y });
 });
 
-/* 交给 hokusai 的这笔参数。笔倾斜只有 pen 才有（pointerType === 'pen'），
- * 鼠标/触摸一律按 0 喂 —— libmypaint 的 tilt 约定是 [-1, 1]，事件里是角度。 */
+/* 传给 hokusai 的笔参数。倾斜仅压感笔具备（pointerType === 'pen'），
+ * 鼠标与触摸统一按 0 传入 —— libmypaint 的 tilt 取值范围为 [-1, 1]，而事件中提供的是角度。 */
 function tiltOpts(e, p) {
   const isPen = e.pointerType === 'pen';
   return {
@@ -427,8 +428,8 @@ function tiltOpts(e, p) {
   };
 }
 
-/* .myb 笔刷自带「流量 / 硬度 / 间距」，这三项在 hokusai 里没有对外接口。
- * 与其让它们看着能用，不如在画笔模式下明确关掉；换回橡皮（内置引擎）再打开。 */
+/* .myb 笔刷自带「流量 / 硬度 / 间距」，这三项在 hokusai 中没有对外接口。
+ * 为避免呈现无效的可调外观，画笔模式下明确禁用；切换回橡皮（内置引擎）时再启用。 */
 function syncBrushControls() {
   const useHk = hk.ready && tool === 'brush';
   for (const key of ['flow', 'hardness', 'spacing']) {
@@ -446,9 +447,9 @@ view.addEventListener('pointermove', e => {
 
   if (gesture) { gestureMove(e); return; }
 
-  // 合并事件：高刷屏不丢点。注意 getCoalescedEvents() 可能返回空数组
-  // （没有合并点、或事件来自脚本合成），此时必须退回原始事件，
-  // 否则这一下 move 直接被吞掉，线就画不出来。
+  // 合并事件：避免高刷新率屏幕丢点。注意 getCoalescedEvents() 可能返回空数组
+  // （无合并点，或事件来自脚本合成），此时必须回退使用原始事件，
+  // 否则该次 move 会被丢弃，导致无法绘制线条。
   let evts = [e];
   if (typeof e.getCoalescedEvents === 'function') {
     const got = e.getCoalescedEvents();
@@ -460,9 +461,9 @@ view.addEventListener('pointermove', e => {
       const q = toDoc(ev);
       hk.move(q.x, q.y, pressureOf(ev), tiltOpts(ev, q));
     }
-    /* 这里**不** flush。
-     * pump() 一次要搬几十个 64×64 块（实测 p90 8.5ms），而压感笔约 4ms 一个事件 ——
-     * 在事件里搬就会越搬越积。改成把落块推迟到 paint 前，一帧只搬一次。 */
+    /* 此处**不**执行 flush。
+     * pump() 单次需搬运数十个 64×64 块（实测 p90 8.5ms），而压感笔约每 4ms 产生一个事件；
+     * 在事件中搬运会导致持续积压。因此将搬运推迟到 paint 之前，每帧仅执行一次。 */
     requestPaint();
     return;
   }
@@ -472,7 +473,7 @@ view.addEventListener('pointermove', e => {
     const q = toDoc(ev);
     stroke.move(q.x, q.y, pressureOf(ev));
   }
-  // 只请求一帧，不在这里重绘 —— 事件再多，一帧也只画一次
+  // 仅请求一帧，不在此处重绘 —— 无论事件多少，每帧只绘制一次
   requestPaint();
 });
 
@@ -507,8 +508,8 @@ view.addEventListener('pointerup', endStroke);
 view.addEventListener('pointercancel', endStroke);
 
 /* ---------- 参考图窗 ----------
- * 钉一张图在旁边对着画。可拖、可缩放、可换图。
- * 它和画布上的文档互不相干 —— 只是「看得见」，不进任何图层。
+ * 在侧边固定一张图片作为参考。支持拖动、缩放与替换。
+ * 它与画布上的文档互不相关 —— 仅用于显示，不进入任何图层。
  */
 const refWin = $('reference');
 const refImg = $('ref-img');
@@ -518,7 +519,7 @@ const refZoom = $('ref-zoom');
 let refScale = 1;
 let refUrl = null;
 
-/* 上边 38px 是 macOS 红绿灯，左边 48px 是工具栏 —— 参考窗别压上去 */
+/* 顶部 38px 为 macOS 窗口控制按钮区域，左侧 48px 为工具栏，参考窗不得覆盖该区域 */
 const REF_TOP_MIN = 52;
 const REF_LEFT_MIN = 56;
 
@@ -541,7 +542,7 @@ function refShow(on) {
   refWin.toggleAttribute('hidden', !on);
   if (on) {
     if (!refImg.src) refEmpty.hidden = false;
-    // 布局完成后校正一次：拖过的地方可能已经跑到标题栏底下了
+    // 布局完成后校正一次：拖动过的位置可能已移至标题栏下方
     requestAnimationFrame(refClamp);
   }
 }
@@ -555,7 +556,7 @@ function refSetImage(file) {
   refEmpty.hidden = true;
   refScale = 1;
   refApplyScale();
-  // 按图片原始宽度定窗宽，但不超过屏的 40%
+  // 按图片原始宽度确定窗口宽度，但不超过屏幕宽度的 40%
   const probe = new Image();
   probe.onload = () => {
     const maxW = Math.min(420, window.innerWidth * 0.4);
@@ -581,7 +582,7 @@ $('ref-load').onclick = () => {
   input.click();
 };
 
-/* 拖进这个面板就是换参考图；拖到画布上仍然走「打开文档」 */
+/* 拖入该面板即替换参考图；拖入画布仍按「打开文档」处理 */
 refBody.addEventListener('dragover', e => {
   if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
   e.preventDefault();
@@ -645,8 +646,8 @@ function toggleReference() {
 }
 
 /* ---------- 导航器 ----------
- * 整张画的缩略图 + 当前视口框。点哪跳哪。
- * 缩略图要重画整个 doc.off，所以节流到 8fps —— 再快纯属浪费。
+ * 整张画布的缩略图与当前视口框，点击即跳转。
+ * 缩略图需重绘整个 doc.off，因此节流至 8fps；更高频率没有实际收益。
  */
 const navCanvas = $('nav-canvas');
 const navFrame = $('nav-frame');
@@ -676,7 +677,7 @@ function updateNavigator(force) {
   nctx.clearRect(0, 0, cw, ch);
   nctx.fillStyle = '#ffffff';
   nctx.fillRect(0, 0, cw, ch);
-  // 缩略图不需要平滑，省点
+  // 缩略图无需平滑处理，以降低开销
   nctx.imageSmoothingEnabled = false;
   nctx.drawImage(doc.off, 0, 0, doc.w, doc.h, 0, 0, cw, ch);
 
@@ -695,11 +696,11 @@ function updateNavigator(force) {
   navFrame.style.top = fy + 'px';
   navFrame.style.width = Math.max(3, fw) + 'px';
   navFrame.style.height = Math.max(3, fh) + 'px';
-  // 视口比整张画还大时不画框（全看清了，框没意义）
+  // 视口大于整张画布时不绘制视口框（画面已完整可见，框无意义）
   navFrame.style.opacity = (fw >= cw - 1 && fh >= ch - 1) ? '0' : '1';
 }
 
-/* 点/拖导航器 → 把那里挪到视口中心 */
+/* 点击或拖动导航器 → 将该位置移至视口中心 */
 function navJump(clientX, clientY) {
   const r = navCanvas.getBoundingClientRect();
   if (!r.width || !r.height) return;
@@ -729,7 +730,7 @@ if (navCanvas) {
 }
 
 /* ---------- 拖拽打开 ----------
- * 拖 .achi 就是打开，拖图片就是新建同尺寸文档 —— 和文件对话框同一套入口。
+ * 拖入 .achi 即打开文件，拖入图片即新建同尺寸文档 —— 与文件对话框共用同一入口。
  */
 let dragDepth = 0;
 
@@ -779,10 +780,10 @@ window.addEventListener('drop', async e => {
   }
 });
 
-/* ---------- 点选连通块 ----------
- * 图层是像素，没有「笔画对象」。但一笔画出来的东西在像素上是**连通的**，
- * 所以用泛洪找出点中的那一块，取它的包围盒 —— 这就约等于「选中这一笔」。
- * 点空白处返回 null，调用方退回整层移动。
+/* ---------- 连通块选取 ----------
+ * 图层以像素存储，不存在「笔画对象」。但单笔绘制的内容在像素上是**连通的**，
+ * 因此通过泛洪找出点击位置的连通块并取其包围盒，近似实现「选中这一笔」。
+ * 点击空白处返回 null，由调用方回退至整层移动。
  */
 function layerImageData(tc) {
   const cv = newCanvas(tc.w, tc.h);
@@ -792,8 +793,8 @@ function layerImageData(tc) {
 }
 
 /**
- * 从 (sx,sy) 泛洪，返回连通块的包围盒。
- * 用扫描线填充，比逐像素 BFS 快一个量级。
+ * 自 (sx, sy) 泛洪，返回连通块的包围盒。
+ * 采用扫描线填充，性能较逐像素 BFS 高一个数量级。
  */
 function connectedBounds(tc, sx, sy) {
   const x0i = Math.floor(sx), y0i = Math.floor(sy);
@@ -812,9 +813,9 @@ function connectedBounds(tc, sx, sy) {
   while (stack.length) {
     const [px, py] = stack.pop();
     let xl = px, xr = px;
-    // 向左扩到边界
+    // 向左扩展至边界
     while (xl > 0 && !seen[py * W + xl - 1] && d[at(xl - 1, py)] >= 8) xl--;
-    // 向右扩
+    // 向右扩展
     while (xr < W - 1 && !seen[py * W + xr + 1] && d[at(xr + 1, py)] >= 8) xr++;
 
     if (xl < minX) minX = xl;
@@ -824,7 +825,7 @@ function connectedBounds(tc, sx, sy) {
 
     for (let x = xl; x <= xr; x++) seen[py * W + x] = 1;
 
-    // 上下两行找新的种子
+    // 在上下两行查找新的种子点
     for (const ny of [py - 1, py + 1]) {
       if (ny < 0 || ny >= H) continue;
       let run = false;
@@ -842,9 +843,9 @@ function connectedBounds(tc, sx, sy) {
 }
 
 /* ---------- 浮动选区 ----------
- * 框选一块，把它从图层里拎出来：可以拖、可以转，松手才落回去。
- * 这是「移动单个/多个笔画」的现实做法 —— 底子是像素，没有笔画对象，
- * 所以选择的范围就是一块内容，而不是某一笔。
+ * 框选一块区域并从图层中提取：可拖动、可旋转，松手后才落回图层。
+ * 这是在像素模型下「移动单个或多个笔画」的实际做法 —— 底层无笔画对象，
+ * 因此选区范围是一块内容，而非某一笔。
  */
 let floating = null;   // { canvas, x, y, w, h, angle, tc, rect, moved }
 
@@ -855,10 +856,10 @@ function newCanvas(w, h) {
   return c;
 }
 
-/* 把选区那一块从图层搬到浮动画布上，并清空原处 */
+/* 将选区内容从图层提取到浮动画布，并清空原位置 */
 function liftSelection() {
   const sel = doc.selection;
-  // paintTarget 本身就是 TileCanvas（不是 Layer），别再取一次 .canvas
+  // paintTarget 本身即 TileCanvas（并非 Layer），无需再次获取 .canvas
   const tc = doc.paintTarget;
   if (!sel || !tc) return false;
 
@@ -870,7 +871,7 @@ function liftSelection() {
   const cv = newCanvas(w, h);
   const fctx = cv.getContext('2d');
 
-  // 从图层逐块拷过来（瓦片是 256×256，按块坐标搬）
+  // 从图层逐块拷贝（瓦片为 256×256，按块坐标搬运）
   for (let r = Math.floor(y / TILE); r <= Math.floor((y + h - 1) / TILE); r++) {
     for (let c = Math.floor(x / TILE); c <= Math.floor((x + w - 1) / TILE); c++) {
       const t = tc.tiles.get(c + ',' + r);
@@ -879,7 +880,7 @@ function liftSelection() {
     }
   }
 
-  // 原地挖掉
+  // 在原位置清除
   const pending = history.beginStroke(tc);
   history.grabRegion(pending, x, y, x + w, y + h);
   tc.forEachTileInBounds(x, y, x + w - 1, y + h - 1, ctx => {
@@ -895,7 +896,7 @@ function liftSelection() {
   return true;
 }
 
-/* 落回图层：先按当前角度画进临时图，再贴回去 */
+/* 落回图层：先按当前角度绘制到临时画布，再贴回图层 */
 function commitFloating() {
   if (!floating) return;
   const f = floating;
@@ -903,8 +904,8 @@ function commitFloating() {
   syncFloatBar();
 
   const tc = f.tc;
-  /* 临时画布要按**旋转后**的包围盒来开，不能还用原尺寸 ——
-   * 否则 45° 转完四个角直接被裁掉，而且不可恢复。 */
+  /* 临时画布必须按**旋转后**的包围盒创建，不能沿用原尺寸，
+   * 否则旋转 45° 后四个角会被裁切，且不可恢复。 */
   const rad = f.angle * Math.PI / 180;
   const ca = Math.abs(Math.cos(rad)), sa = Math.abs(Math.sin(rad));
   const tw = Math.max(1, Math.ceil(f.w * ca + f.h * sa));
@@ -916,9 +917,18 @@ function commitFloating() {
   tctx.rotate(rad);
   tctx.drawImage(f.canvas, -f.w / 2, -f.h / 2);
 
-  // 绕中心转，所以中心不变：左上角 = 中心 - 新尺寸/2
+  // 绕中心旋转，中心保持不变：左上角 = 中心 - 新尺寸 / 2
   const left = Math.round(f.x + f.w / 2 - tw / 2);
   const top = Math.round(f.y + f.h / 2 - th / 2);
+
+  /* 落回前先扩大撤销快照，使其覆盖「落回后的实际区域」。
+   * 提取时拍摄的范围只有原矩形；旋转或移动后内容会越出该矩形，
+   * 若不补拍，超出的那部分像素不会被撤销覆盖，撤销后会留下残影
+   * （审计结论 audit/2026-11-20-audit.md 第 2.6 节）。
+   * grabRegion 会自动把范围扩为并集，并只补拍新增的条带。 */
+  if (f.pending) {
+    history.grabRegion(f.pending, left, top, left + tw, top + th);
+  }
 
   tc.forEachTileInBounds(left, top, left + tw - 1, top + th - 1, ctx => {
     ctx.drawImage(tmp, left, top);
@@ -930,7 +940,7 @@ function commitFloating() {
   toast('已放置');
 }
 
-/* 取消：原样放回 */
+/* 取消：按原状放回 */
 function cancelFloating() {
   if (!floating) return;
   const f = floating;
@@ -943,7 +953,7 @@ function cancelFloating() {
   redraw();
 }
 
-/* 浮动的旋转条 */
+/* 浮动选区的旋转控制条 */
 const floatBar = $('float-bar');
 const fbRotate = $('fb-rotate');
 const fbVal = $('fb-val');
@@ -975,8 +985,8 @@ if (fbRotate) {
 }
 
 /* ---------- 旋转 ----------
- * 拖动时不重采样（8.7M 像素每帧都做会卡死），只显示角度；
- * 松手才真正转一次。
+ * 拖动过程中不重采样（对 870 万像素逐帧重采样会导致界面无响应），仅显示角度；
+ * 松手后才执行一次实际旋转。
  */
 let rotateHintEl = null;
 
@@ -995,23 +1005,47 @@ function hideRotateHint() {
 }
 
 /**
- * 把整层绕内容中心旋转 deg 度，重采样后写回瓦片。
- * 注意不是块级旋转 —— 旋转后每块的内容来自任意方向，只能整层重采样。
+ * 将整层绕内容中心旋转 deg 度，重采样后写回瓦片。
+ * 注意这不是块级旋转 —— 旋转后每块的内容来自任意方向，只能对整层重采样。
  */
 function rotateLayer(node, deg) {
-  const tc = node.canvas;
-  const b = boundsOf(tc);
+  const b = boundsOf(node.canvas);
   if (!b) return;
 
-  const pending = history.beginStroke(tc);
+  const pending = history.beginStroke(node.canvas);
+  /* 蒙版随之旋转，所以快照范围必须同时覆盖蒙版 ——
+   * 审计结论（audit/2026-11-20-audit.md 第 1.4 节）：原先只对画布拍摄，
+   * 旋转后撤销不会还原蒙版，内容与蒙版永久脱节。 */
   history.grabRegion(pending, 0, 0, doc.w, doc.h);
+  let maskPending = null;
+  if (node.mask && node.mask.tiles.size) {
+    maskPending = history.beginStroke(node.mask);
+    history.grabRegion(maskPending, 0, 0, doc.w, doc.h);
+  }
 
   const cx = (b.x0 + b.x1) / 2;
   const cy = (b.y0 + b.y1) / 2;
 
-  /* 两步：先无变换地把整层无缝合并，再一次性旋转。
-   * 直接对每块做旋转 drawImage 的话，每块边缘都落在非整数位置，
-   * 相邻块插值不一致 → 一条条浅色缝。 */
+  rotateTiles(node.canvas, deg, cx, cy);
+  // 蒙版绕同一中心旋转，两者才不会错位
+  if (node.mask && node.mask.tiles.size) rotateTiles(node.mask, deg, cx, cy);
+
+  node.canvas.markDirty(0, 0, doc.w, doc.h);
+  if (node.mask) node.mask.markDirty(0, 0, doc.w, doc.h);
+
+  if (pending) history.commit(pending);
+  if (maskPending) history.commit(maskPending);
+  op('变换', '旋转', Math.round(deg) + '°');
+  redraw();
+  toast(`已旋转 ${deg >= 0 ? '+' : ''}${Math.round(deg)}°`);
+}
+
+/* 将某个 TileCanvas 绕 (cx, cy) 旋转 deg 度，结果写回原对象。
+ * 内容与蒙版共用此函数，保证两者使用完全相同的变换与中心点。 */
+function rotateTiles(tc, deg, cx, cy) {
+  /* 分两步：先无变换地将整层无缝合并，再一次性旋转。
+   * 若直接对每块执行旋转 drawImage，每块边缘都会落在非整数位置，
+   * 相邻块插值不一致，产生条状浅色缝隙。 */
   const flat = document.createElement('canvas');
   flat.width = doc.w;
   flat.height = doc.h;
@@ -1029,12 +1063,11 @@ function rotateLayer(node, deg) {
   tctx.translate(-cx, -cy);
   tctx.drawImage(flat, 0, 0);
 
-  // flat 已经用完了，立刻放手：大画布上它值 35MB
+  // flat 使用完毕立即释放：大画布上它占用约 35MB
   flat.width = 0;
   flat.height = 0;
 
   // 写回瓦片
-  const old = [...tc.tiles.values()].map(t => ({ col: t.col, row: t.row, canvas: t.canvas }));
   tc.tiles.clear();
   for (let r = 0; r < tc.rows; r++) {
     for (let c = 0; c < tc.cols; c++) {
@@ -1042,7 +1075,7 @@ function rotateLayer(node, deg) {
       const th = Math.min(TILE, doc.h - r * TILE);
       if (tw <= 0 || th <= 0) continue;
       /* 每块向外多取 1px 重叠。
-       * 精确取 tw×th 时相邻块之间会留一条亚像素缝（旋转后特别明显）。 */
+       * 精确取 tw×th 时，相邻块之间会残留亚像素缝隙（旋转后尤为明显）。 */
       const ox0 = c * TILE, oy0 = r * TILE;
       const sx = Math.max(0, ox0 - 1), sy = Math.max(0, oy0 - 1);
       const sw = Math.min(tmp.width - sx, tw + 2), sh = Math.min(tmp.height - sy, th + 2);
@@ -1050,13 +1083,6 @@ function rotateLayer(node, deg) {
       t.ctx.drawImage(tmp, sx, sy, sw, sh, sx - ox0, sy - oy0, sw, sh);
     }
   }
-  if (node.mask) { /* 蒙版跟着转会更复杂，先不动，留给自由变换统一做 */ }
-
-  tc.markDirty(0, 0, doc.w, doc.h);
-  if (pending) history.commit(pending);
-  op('变换', '旋转', Math.round(deg) + '°');
-  redraw();
-  toast(`已旋转 ${deg >= 0 ? '+' : ''}${Math.round(deg)}°`);
 }
 
 /* ---------- 平移缩放 ---------- */
@@ -1067,7 +1093,7 @@ view.addEventListener('wheel', e => {
     const mx = e.clientX - r.left, my = e.clientY - r.top;
     const old = doc.view.zoom;
     const next = Math.max(0.02, Math.min(16, old * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
-    // 以鼠标为锚点缩放
+    // 以指针位置为锚点缩放
     doc.view.x = mx - (mx - doc.view.x) * (next / old);
     doc.view.y = my - (my - doc.view.y) * (next / old);
     doc.view.zoom = next;
@@ -1094,7 +1120,7 @@ $('btn-fit').onclick = fit;
 const TOOL_KEYS = { b: 'brush', e: 'eraser', i: 'pick', v: 'move', m: 'select', h: 'hand', z: 'zoom' };
 
 function setTool(next) {
-  // 浮着一块时切工具，先把它落回图层，否则它会一直挂在那儿
+  // 存在浮动选区时切换工具，需先将其落回图层，否则会一直挂起
   if (floating && next !== 'select') commitFloating();
   if (tool !== next) op('工具', next);
   tool = next;
@@ -1123,9 +1149,9 @@ function zoomAt(clientX, clientY, factor) {
   redraw();
 }
 
-/* 把某个 TileCanvas 整体平移 dx,dy。
- * 注意是「原地换内容」而不是换对象 —— history 里握着这个 TileCanvas 的引用，
- * 换对象的话撤销读到的「改完」快照就还是旧的。 */
+/* 将某个 TileCanvas 整体平移 dx, dy。
+ * 注意是「原地替换内容」而非替换对象 —— history 持有该 TileCanvas 的引用，
+ * 若替换对象，撤销时读取到的「修改后」快照仍是旧内容。 */
 function translateTiles(src, dx, dy) {
   const T = TILE;
   const old = [...src.tiles.values()].map(t => ({ col: t.col, row: t.row, canvas: t.canvas }));
@@ -1138,15 +1164,42 @@ function translateTiles(src, dx, dy) {
   }
 }
 
+/* 计算内容的实际包围盒（世界坐标，已裁剪到画布范围）。
+ *
+ * 注意：不能直接把块网格的外接矩形当作内容边界。块固定为 256×256，
+ * 内容通常只占块的一部分，按块算出的边界最多会偏出 255px；
+ * 旋转以包围盒中心为轴，中心一旦偏移，内容就会被甩出画布。
+ * 因此这里必须逐块扫描像素，求真实内容的边界。 */
 function boundsOf(tc) {
+  /* 逐块扫描像素求真实边界，而不是直接取块网格的外接矩形：
+   * 块固定 256×256，内容通常只占其中一部分，按块算最多偏出 255px。
+   * 旋转以包围盒中心为轴，中心一旦偏移，内容会被甩出画布。
+   *
+   * 性能：先用 getImageData 一次性取出整块，再在类型化数组上扫描；
+   * 不对逐像素调用 getImageData。空块（全透明）会被快速跳过。 */
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const t of tc.tiles.values()) {
-    x0 = Math.min(x0, t.col * TILE);
-    y0 = Math.min(y0, t.row * TILE);
-    x1 = Math.max(x1, t.col * TILE + TILE);
-    y1 = Math.max(y1, t.row * TILE + TILE);
+    const baseX = t.col * TILE, baseY = t.row * TILE;
+    const maxY = Math.min(TILE, tc.h - baseY);
+    const maxX = Math.min(TILE, tc.w - baseX);
+    if (maxX <= 0 || maxY <= 0) continue;
+
+    const img = t.ctx.getImageData(0, 0, TILE, TILE).data;
+    for (let y = 0; y < maxY; y++) {
+      const wy = baseY + y;
+      const rowOff = y * TILE * 4;
+      for (let x = 0; x < maxX; x++) {
+        if (img[rowOff + x * 4 + 3] === 0) continue;
+        const wx = baseX + x;
+        if (wx < x0) x0 = wx;
+        if (wy < y0) y0 = wy;
+        if (wx + 1 > x1) x1 = wx + 1;
+        if (wy + 1 > y1) y1 = wy + 1;
+      }
+    }
   }
-  return x1 > x0 ? { x0, y0, x1, y1 } : null;
+  if (!(x1 > x0)) return null;
+  return { x0, y0, x1, y1 };
 }
 
 function commitMove(node, dx, dy) {
@@ -1155,11 +1208,25 @@ function commitMove(node, dx, dy) {
   const b = boundsOf(target);
   if (!b) return;
 
-  // 撤销：旧位置 ∪ 新位置
+  // 撤销范围：旧位置与新位置的并集
   const pending = history.beginStroke(target);
   history.grabRegion(pending,
     Math.min(b.x0, b.x0 + dx), Math.min(b.y0, b.y0 + dy),
     Math.max(b.x1, b.x1 + dx), Math.max(b.y1, b.y1 + dy));
+
+  /* 蒙版同样被平移，因此必须单独拍摄快照。
+   * 审计结论（audit/2026-11-20-audit.md 第 1.4 节）：原先 translateTiles 移动了蒙版，
+   * 但历史只记录 node.canvas，撤销后蒙版停留在新位置，与内容错位。 */
+  let maskPending = null;
+  if (node.mask) {
+    const mb = boundsOf(node.mask);
+    if (mb) {
+      maskPending = history.beginStroke(node.mask);
+      history.grabRegion(maskPending,
+        Math.min(mb.x0, mb.x0 + dx), Math.min(mb.y0, mb.y0 + dy),
+        Math.max(mb.x1, mb.x1 + dx), Math.max(mb.y1, mb.y1 + dy));
+    }
+  }
 
   op('变换', '移动', dx + ', ' + dy);
   translateTiles(target, dx, dy);
@@ -1168,6 +1235,7 @@ function commitMove(node, dx, dy) {
   target.markDirty(0, 0, doc.w, doc.h);
   if (node.mask) node.mask.markDirty(0, 0, doc.w, doc.h);
   history.commit(pending);
+  if (maskPending) history.commit(maskPending);
   redraw();
 }
 
@@ -1207,7 +1275,7 @@ function gestureMove(e) {
     g.angle = deg;
 
     if (g.target === 'float' && floating) {
-      // 拖浮动块：直接改角度，实时预览（这才是「够实时」）
+      // 拖动浮动块：直接修改角度并实时预览
       floating.angle = deg;
       syncFloatBar();
       requestPaint();
@@ -1221,7 +1289,7 @@ function gestureMove(e) {
     const dx = Math.round(p.x - g.x0);
     const dy = Math.round(p.y - g.y0);
     doc.previewOffset = { node: g.node, dx, dy };
-    // 只重画「旧位置 ∪ 新位置」那一块，别整张重合成
+    // 仅重绘「旧位置与新位置的并集」区域，不做整张重新合成
     const b = g.bounds || { x0: 0, y0: 0, x1: doc.w, y1: doc.h };
     doc.markRegionDirty(
       Math.min(b.x0, b.x0 + dx), Math.min(b.y0, b.y0 + dy),
@@ -1273,8 +1341,8 @@ function gestureEnd() {
 }
 
 /* ---------- 笔刷属性：Blender 式滑块 ----------
- * 整条能拖、数字压在条上、滚轮和方向键都能改。
- * 这里只负责「UI 值 → 笔刷真实值」的换算（大多要除以 100）。
+ * 整条可拖动、数值内嵌于滑块上，支持滚轮与方向键调整。
+ * 此处仅负责「UI 值 → 笔刷实际值」的换算（多数需除以 100）。
  */
 const sliders = new Map();
 
@@ -1307,8 +1375,8 @@ for (const cfg of BRUSH_SLIDERS) {
 }
 
 /* ---------- 颜色：Blender 式取色器 ----------
- * 色轮 + 明度竖条 + RGB/HSV 切换 + 三根通道条。
- * 这里只做「取色器 ↔ 笔刷颜色 / hex 框 / 色块」的同步。
+ * 色轮 + 明度竖条 + RGB / HSV 切换 + 三根通道条。
+ * 此处仅负责「取色器 ↔ 笔刷颜色 / hex 输入框 / 色块」之间的同步。
  */
 function hexOf({ r, g, b }) {
   return '#' + [r, g, b].map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
@@ -1321,7 +1389,7 @@ function parseHex(hex) {
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
 
-/* 主色 / 副色：两个槽，取色器编辑的是「当前槽」。 */
+/* 主色与副色：两个槽位，取色器编辑的是「当前槽位」。 */
 const colors = { primary: '#e8eaf0', secondary: '#101014' };
 let colorSlot = 'primary';
 
@@ -1353,7 +1421,7 @@ const picker = new ColorPicker({
   onChange: hex => applyColor(hex, true),
 });
 
-/* 切到另一个槽时，界面跟着切到那个颜色 */
+/* 切换槽位时，界面同步显示该槽位的颜色 */
 function syncColorSlot() {
   paintSwatches();
   const c = colors[colorSlot];
@@ -1373,7 +1441,7 @@ function swapColors() {
 $('sw-primary').onclick = () => { colorSlot = 'primary'; syncColorSlot(); };
 $('sw-secondary').onclick = () => { colorSlot = 'secondary'; syncColorSlot(); };
 
-/* 原生取色器和 hex 框：改的都是「当前槽」的颜色 */
+/* 原生取色器与 hex 输入框：修改的均为「当前槽位」的颜色 */
 $('color').oninput = e => setColor(e.target.value);
 $('hex').onchange = e => setColor(e.target.value);
 $('hex').onkeydown = e => { if (e.key === 'Enter') setColor(e.target.value); };
@@ -1392,12 +1460,17 @@ paintSwatches();
 syncColorSlot();
 
 /* ---------- 图层蒙版 ----------
- * 只做「透明度蒙版」：笔画落在蒙版上，白 = 看得见，空 = 抠掉。
- * 合成时先把这个图层画到暂存，再 destination-in 蒙版。
+ * 仅实现「透明度蒙版」：笔画落在蒙版上，白色 = 可见，空 = 抠除。
+ * 合成时先将该图层绘制到暂存画布，再以 destination-in 应用蒙版。
  */
 function setMaskMode(on) {
   const l = doc.layer;
-  if (on && l && !l.mask) l.ensureMask();
+  if (on && l && !l.mask) {
+    /* 蒙版的新建同样会改变图层结构（影响导出与合成结果），纳入撤销栈。 */
+    const pending = history.beginStructure(doc);
+    l.ensureMask();
+    history.commitStructure(pending, '新建蒙版');
+  }
   doc.maskMode = !!(on && l && l.mask);
   $('btn-mask').classList.toggle('on', doc.maskMode);
   redraw();
@@ -1407,8 +1480,8 @@ function setMaskMode(on) {
 $('btn-mask').onclick = () => setMaskMode(!doc.maskMode);
 
 /* ---------- 图层树 ----------
- * 显示顺序就是 children 的顺序（children[0] 在最上面），合成时倒着走。
- * 行可以拖：拖到组的中间段 = 放进组里，拖到行上/下半 = 插到它前面/后面。
+ * 显示顺序即 children 的顺序（children[0] 为最上层），合成时反向遍历。
+ * 行支持拖拽：拖至组的中段 = 移入该组；拖至行的上半 / 下半 = 插入其前 / 后。
  */
 let uidSeq = 0;
 const nodeById = new Map();
@@ -1425,7 +1498,7 @@ function layerRowEl(node) {
   return $('layers').querySelector(`.lay-row[data-uid="${uidOf(node)}"]`);
 }
 
-/* 双击名字原地改名。空名字不接受，Esc 放弃。 */
+/* 双击名称就地重命名。空名称不被接受，Esc 放弃修改。 */
 function startRename(node, span) {
   const inp = document.createElement('input');
   inp.className = 'lay-rename';
@@ -1435,14 +1508,18 @@ function startRename(node, span) {
   inp.focus();
   inp.select();
 
-  /* 守卫：inp.remove() 会同步触发 blur，blur 又调一次 done，
-   * 第二次 remove 就抛 NotFoundError。只认第一次。 */
+  /* 防护：inp.remove() 会同步触发 blur，blur 又调用一次 done，
+   * 第二次 remove 将抛出 NotFoundError。因此仅接受第一次调用。 */
   let finished = false;
   const done = commit => {
     if (finished) return;
     finished = true;
     const v = inp.value.trim();
-    if (commit && v) node.name = v;
+    if (commit && v && v !== node.name) {
+      const pending = history.beginStructure(doc);
+      node.name = v;
+      history.commitStructure(pending, '重命名');
+    }
     if (inp.isConnected) inp.remove();
     renderLayers();
   };
@@ -1457,7 +1534,7 @@ function startRename(node, span) {
   });
 }
 
-/* 缩略图底纹：4px 棋盘格（原来 CSS 里 8px 在 26px 方框内正好排成 6 块，像重复了 6 次） */
+/* 缩略图底纹：4px 棋盘格（原 CSS 使用 8px，在 26px 方框内恰好排成 6 块，呈现重复感） */
 function paintChecker(ctx, size, step = 4) {
   for (let y = 0; y < size; y += step) {
     for (let x = 0; x < size; x += step) {
@@ -1468,10 +1545,10 @@ function paintChecker(ctx, size, step = 4) {
 }
 
 /* ---------- 图层缩略图 ----------
- * 缩略图要重画整层的瓦片，所以按「内容有没有变过」缓存，不能每次渲染都算。
+ * 缩略图需重绘整层瓦片，因此按「内容是否变化」缓存，不可在每次渲染时重新计算。
  */
-/* 直接画进 canvas 元素，不走 toDataURL ——
- * 每笔落完都要刷新，而 PNG 编码一次 10~30ms，画的时候能感觉到顿一下。 */
+/* 直接绘制到 canvas 元素，不经过 toDataURL ——
+ * 每笔完成后都需刷新，而 PNG 编码单次耗时 10–30ms，绘制过程中可感知卡顿。 */
 function paintThumb(el, node, size = 32) {
   const ctx = el.getContext('2d');
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1509,13 +1586,13 @@ function paintMaskThumb(el, node, size = 32) {
   }
 }
 
-/* 笔一落完就刷新缩略图，但别重建整个图层面板（会闪、也会丢掉正在进行的交互） */
+/* 笔迹完成后刷新缩略图，但不重建整个图层面板（会闪烁，并丢失正在进行的交互） */
 let thumbAt = 0;
 let thumbTimer = 0;
 
 function refreshThumbs(force) {
   const now = performance.now();
-  // 节流：连续快画时别每一笔都重画缩略图
+  // 节流：连续快速绘制时不为每一笔重绘缩略图
   if (!force && now - thumbAt < 250) {
     clearTimeout(thumbTimer);
     thumbTimer = setTimeout(() => refreshThumbs(true), 260);
@@ -1539,7 +1616,7 @@ function refreshThumbs(force) {
   }
 }
 
-/* 内容每变一次就打一个戳，缩略图据此判断要不要重算 */
+/* 内容每次变化即更新版本戳，缩略图据此判断是否需要重算 */
 function bumpThumbStamp(tc) {
   if (tc) tc._dirtyStamp = (tc._dirtyStamp || 0) + 1;
 }
@@ -1554,7 +1631,7 @@ function maskThumb(node, size = 32) {
   const ctx = cv.getContext('2d');
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, size, size);            // 蒙版看不见 = 黑底
-  // 注：蒙版缩略图不用棋盘格，黑=遮住、白=显示，本身就有语义
+  // 注：蒙版缩略图不使用棋盘格，黑色 = 遮住、白色 = 显示，本身即具备语义
   const s2 = Math.min(size / doc.w, size / doc.h);
   for (const t of m.tiles.values()) {
     ctx.drawImage(t.canvas, 0, 0, 256, 256,
@@ -1611,14 +1688,14 @@ function layerRow(node, depth) {
   name.ondblclick = e => { e.stopPropagation(); startRename(node, name); };
 
   row.append(exp, eye, thumb, name);
-  // 这里**不能**调 renderLayers()：整棵树重建的话，
-  // 第一次点击就把这个元素换掉了，第二次点在新元素上，浏览器不会认成双击。
+  // 此处**不可**调用 renderLayers()：若重建整棵树，
+  // 第一次点击即替换该元素，第二次点击落在新元素上，浏览器不会识别为双击。
   row.onclick = () => selectNode(node);
   row.addEventListener('pointerdown', e => startLayerDrag(e, node));
   return row;
 }
 
-/* 画布 2D 原生支持的混合模式，名字用中文 */
+/* 画布 2D 原生支持的混合模式，名称使用中文 */
 const BLEND_MODES = [
   ['source-over', '正常'],
   ['multiply', '正片叠底'],
@@ -1640,14 +1717,34 @@ const BLEND_MODES = [
 
 function doDelete(node) {
   op('图层', '删除', node && node.name);
+  /* 删除是数据丢失级操作，必须进撤销栈。
+   * 节点对象被移出树时仍持有自身像素，撤销只需挂回即可完整恢复。 */
+  const pending = history.beginStructure(doc);
   if (doc.deleteNode(node)) {
+    history.commitStructure(pending, '删除图层');
     renderLayers();
     redraw();
   }
 }
 
-/* 选中那一行下面挂一条属性：不透明度 / 混合模式 / 删除。
- * 放在行下面而不是行里面 —— 行里塞下拉框和滑杆会把树挤变形，拖拽也没法做了。 */
+/* 不透明度滑杆在拖动过程中会持续触发回调。
+ * 此处以 300ms 静默期合并为一条结构记录：拖动结束（或停手）后统一入栈，
+ * 避免一次拖动产生数十条撤销记录，稀释历史。 */
+const attrCommitTimers = new WeakMap();
+
+function scheduleAttrCommit(node) {
+  const prev = attrCommitTimers.get(node);
+  if (prev) clearTimeout(prev);
+  attrCommitTimers.set(node, setTimeout(() => {
+    attrCommitTimers.delete(node);
+    const pending = node._opPending;
+    node._opPending = null;
+    if (pending) history.commitStructure(pending, '不透明度');
+  }, 300));
+}
+
+/* 在选中行下方挂载属性条：不透明度 / 混合模式 / 删除。
+ * 置于行下方而非行内部 —— 行内嵌入下拉框与滑杆会使树结构变形，且无法正常拖拽。 */
 function layerProps(node) {
   const wrap = document.createElement('div');
   wrap.className = 'lay-props';
@@ -1656,7 +1753,14 @@ function layerProps(node) {
   const op = new Slider({
     label: '不透明度', min: 0, max: 100, step: 1,
     value: Math.round(node.opacity * 100),
-    onChange: v => { node.opacity = v / 100; redraw(); },
+    onChange: v => {
+      /* 滑杆连续拖动会触发大量回调；用下方标记合并成一条撤销记录，
+       * 仅在本次交互结束时入栈，避免历史被稀释。 */
+      if (!node._opPending) node._opPending = history.beginStructure(doc);
+      node.opacity = v / 100;
+      scheduleAttrCommit(node);
+      redraw();
+    },
   });
   op.el.classList.add('lp-op');
 
@@ -1672,7 +1776,12 @@ function layerProps(node) {
     sel.appendChild(o);
   }
   sel.value = node.mode;
-  sel.onchange = () => { node.mode = sel.value; redraw(); };
+  sel.onchange = () => {
+    const pending = history.beginStructure(doc);
+    node.mode = sel.value;
+    history.commitStructure(pending, '混合模式');
+    redraw();
+  };
 
   const del = document.createElement('button');
   del.className = 'btn icon lp-del';
@@ -1685,8 +1794,8 @@ function layerProps(node) {
   return wrap;
 }
 
-/* 只换选中态：更新高亮 + 把属性条挪到新选中的行下面，
- * 其它行元素保持原样（双击改名依赖这一点）。 */
+/* 仅更新选中态：刷新高亮并将属性条移至新选中行下方，
+ * 其余行元素保持不变（双击重命名依赖这一行为）。 */
 function selectNode(node) {
   doc.select(node);
   if (doc.maskMode) setMaskMode(false);
@@ -1694,8 +1803,8 @@ function selectNode(node) {
   box.querySelectorAll('.lay-row').forEach(r => {
     r.classList.toggle('on', r.dataset.uid === uidOf(node));
   });
-  // 属性条固定在列表顶部（吸顶），不进到行之间 ——
-  // 插在选中行下面会让它后面所有行往下跳，下一次点击就点空了。
+  // 属性条固定在列表顶部（吸附），不插入行之间 ——
+  // 若插入选中行下方，会使其后所有行下移，导致下一次点击落空。
   box.querySelectorAll('.lay-props').forEach(p => p.remove());
   box.prepend(layerProps(node));
 }
@@ -1714,7 +1823,7 @@ function renderLayers() {
   walk(doc.root.children, 0);
 }
 
-/* 蒙版单独一行：点它进/出蒙版模式，缩略图黑底白 = 遮住多少一眼看得出 */
+/* 蒙版单独占一行：点击进入 / 退出蒙版模式，缩略图为黑底白，遮住范围可直接判读 */
 function maskRow(node, depth) {
   const row = document.createElement('div');
   row.className = 'lay-row mask-row' + (doc.maskMode && doc.activeLeaf === node ? ' on' : '');
@@ -1748,7 +1857,7 @@ function maskRow(node, depth) {
   return row;
 }
 
-/* ---- 拖拽：把图层挪进组、挪出组、上下换位 ---- */
+/* ---- 拖拽：将图层移入组、移出组、上下换位 ---- */
 let dragState = null;
 
 function startLayerDrag(e, node) {
@@ -1763,7 +1872,7 @@ function startLayerDrag(e, node) {
 function hitLayerTarget(cx, cy) {
   const box = $('layers');
 
-  // 属性条不是行，落在它上面就当「插到那一行后面」
+  // 属性条并非行，落入其上时按「插入到该行之后」处理
   for (const p of box.querySelectorAll('.lay-props')) {
     const r = p.getBoundingClientRect();
     if (cy < r.top || cy > r.bottom) continue;
@@ -1779,7 +1888,7 @@ function hitLayerTarget(cx, cy) {
     const node = nodeById.get(row.dataset.uid);
     if (!node) continue;
     const rel = (cy - r.top) / r.height;
-    // 组的中间一段 = 放进这个组
+    // 组的中段 = 移入该组
     if (node.isGroup && rel > 0.28 && rel < 0.72) {
       return { row, parent: node, index: 0, into: true };
     }
@@ -1788,7 +1897,7 @@ function hitLayerTarget(cx, cy) {
     const above = rel < 0.5;
     return { row, parent, index: above ? i : i + 1, into: false, pos: above ? 'top' : 'bottom' };
   }
-  // 落在列表下方空白：放到根的最底下
+  // 落在列表下方空白区域：放置到根节点最底部
   return { row: null, parent: doc.root, index: doc.root.children.length, into: false };
 }
 
@@ -1818,14 +1927,16 @@ function onLayerDragEnd() {
     .forEach(r => r.classList.remove('drop-into', 'drop-top', 'drop-bottom', 'dragging'));
   if (!st || !st.active || !st.target) return;
   const t = st.target;
+  const pending = history.beginStructure(doc);
   if (doc.moveNode(st.node, t.parent, t.index)) {
     if (t.parent.isGroup && !t.parent.expanded) t.parent.expanded = true;
+    history.commitStructure(pending, '图层重排');
     renderLayers();
     redraw();
   }
 }
 
-/* 面板折叠：点标题收放，点标题里的按钮不算 */
+/* 面板折叠：点击标题展开 / 收起，点击标题内的按钮不触发折叠 */
 document.querySelectorAll('.panel > h3').forEach(h => {
   h.onclick = e => {
     if (e.target.closest('button')) return;
@@ -1834,28 +1945,34 @@ document.querySelectorAll('.panel > h3').forEach(h => {
 });
 
 $('btn-add-layer').onclick = () => {
-  doc.addLayer(); op('图层', '新建', doc.activeLeaf && doc.activeLeaf.name);
+  const pending = history.beginStructure(doc);
+  doc.addLayer();
+  history.commitStructure(pending, '新建图层');
+  op('图层', '新建', doc.activeLeaf && doc.activeLeaf.name);
   renderLayers(); redraw();
 };
 $('btn-add-group').onclick = () => {
-  doc.addGroup(); op('图层', '新建组');
+  const pending = history.beginStructure(doc);
+  doc.addGroup();
+  history.commitStructure(pending, '新建组');
+  op('图层', '新建组');
   renderLayers(); redraw();
 };
 
-/* 撤销/重做的按钮绑定统一放在下面的命令分发处，别在这里再绑一次 */
+/* 撤销 / 重做的按钮绑定统一置于下方命令分发处，不在此处重复绑定 */
 
 window.addEventListener('keydown', e => {
-  // 在输入框里打字时，b/e/v/m 这些不该被当成工具切换
+  // 在输入框中打字时，b / e / v / m 等按键不应被识别为工具切换
   const el = e.target;
   if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) {
-    // 只放行 Esc（取消）和 Enter（已经各自处理）
+    // 仅放行 Esc（取消）与 Enter（已各自处理）
     if (e.key !== 'Escape') return;
   }
   const meta = e.metaKey || e.ctrlKey;
   if (meta && e.key.toLowerCase() === 'z') {
     e.preventDefault();
-    if (e.shiftKey) { if (history.redo(doc.layer.canvas)) redraw(); }
-    else { if (history.undo(doc.layer.canvas)) redraw(); }
+    if (e.shiftKey) doRedo();
+    else doUndo();
   }
   const k = e.key.toLowerCase();
   if (meta && k === 's') { e.preventDefault(); doSave(e.shiftKey); return; }
@@ -1879,25 +1996,43 @@ async function doExport() {
   if (!ex) return;
   const blob = await ex.run(doc);
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
+  const url = URL.createObjectURL(blob);
+  a.href = url;
   a.download = (docName === '未命名' ? 'achipaint' : docName) + '.png';
   a.click();
-  URL.revokeObjectURL(a.href);
+  /* 不可立即释放：Safari 在 click() 之后才真正开始读取 blob，
+   * 同步 revoke 会导致下载中断。fileio.js 中的下载兜底同样延迟释放，
+   * 此处保持一致（审计结论 audit/2026-11-20-audit.md 第 2.4 节）。 */
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
   bus.emit('export:done', { id: 'png' });
 }
 
-/* ---------- 调试钩子（开发期用，方便在控制台查状态） ---------- */
-/* doc 是可重建的（启动浮层选尺寸会换掉它），所以这里必须用 getter，
- * 否则调试钩子永远指着第一张画布。 */
+/* ---------- 调试钩子（开发期使用，便于在控制台检查状态） ---------- */
+/* doc 可被重建（在启动浮层选择尺寸会替换它），因此必须使用 getter，
+ * 否则调试钩子将始终指向第一张画布。 */
 window.__achi = {
   get doc() { return doc; },
   brush, history, host, bus, redraw, requestPaint, hk,
   newDocument, doOpen, doSave, doExport, runCommand,
   get rotateLayer() { return rotateLayer; },
+  get commitMove() { return commitMove; },
+  /* 浮动选区：供测试与调试脚本走真实路径（拖动本身由手势层驱动） */
+  liftSelection: () => liftSelection(),
+  commitFloating: () => commitFloating(),
+  cancelFloating: () => cancelFloating(),
+  get floating() { return floating; },
+  moveFloating(dx, dy) {
+    if (!floating) return false;
+    floating.x += dx;
+    floating.y += dy;
+    floating.moved = true;
+    requestPaint();
+    return true;
+  },
   get devconsole() { return mainConsole; },
   isAchiFile, openImageAsDocument,
 
-  /* 控制台里的自测：不经过文件对话框，直接用内存里的数据走一遍真实路径 */
+  /* 控制台自测：不经过文件对话框，直接以内存中的数据走一遍真实路径 */
   async selfTestImage() {
     const c = document.createElement('canvas');
     c.width = 320; c.height = 240;
@@ -1916,8 +2051,8 @@ window.__achi = {
 
     const sizeOk = back.w === doc.w && back.h === doc.h;
 
-    /* 只比尺寸等于没测：旧格式那个 bug 就是「尺寸对、像素错」。
-     * 这里逐瓦片比 alpha 和颜色，任何一处不同都算失败。 */
+    /* 仅比对尺寸等同于未测试：旧格式的缺陷正是「尺寸正确、像素错误」。
+     * 此处逐瓦片比对 alpha 与颜色，任何一处不一致即判定失败。 */
     const leaves0 = [], leaves1 = [];
     const w0 = ns => ns.forEach(n => (n.isGroup ? w0(n.children) : leaves0.push(n)));
     const w1 = ns => ns.forEach(n => (n.isGroup ? w1(n.children) : leaves1.push(n)));
@@ -1946,7 +2081,7 @@ window.__achi = {
 };
 
 /* ---------- hokusai 载入 ---------- */
-/* 撤销的钩子：overlay 一变就扩拍，压图层之前那些像素已经存好了 */
+/* 撤销钩子：overlay 变化即扩拍，压入图层之前相关像素已保存完毕 */
 hk.onRegion = (x0, y0, x1, y1) => {
   if (pending) history.grabRegion(pending, x0, y0, x1, y1);
 };
@@ -1974,14 +2109,14 @@ async function initHokusai() {
     return;
   }
 
-  /* 默认预设必须固定。jsons 是 Promise.all 并发 fetch 出来的，
-   * 谁先到谁先进对象，键序每次都不一样 —— 不钉死的话，
-   * 每次打开默认笔刷都在换人。 */
+  /* 默认预设必须固定。jsons 由 Promise.all 并发 fetch 得到，
+   * 键序取决于完成顺序且每次不同 —— 若不显式固定，
+   * 每次启动的默认笔刷都会变化。 */
   hk.setPreset(Object.values(HOKUSAI_PRESETS)[0]);
 
   if (sel) {
     sel.innerHTML = '';
-    // 顺序也照 HOKUSAI_PRESETS 来，别用并发 fetch 留下的键序
+    // 顺序同样依照 HOKUSAI_PRESETS，不使用并发 fetch 产生的键序
     for (const name of Object.values(HOKUSAI_PRESETS)) {
       if (!hk.presets.has(name)) continue;
       const o = document.createElement('option');
@@ -1995,9 +2130,9 @@ async function initHokusai() {
 }
 
 /* ---------- 侧栏宽度 ----------
- * 拖动左边缘改宽度，结果存 localStorage。
- * 拖动过程中只改 CSS 变量 + 把画布元素拉满（视觉上跟手），
- * 松手才真的重算画布像素 —— 每帧重算等于每帧整张重合成，太贵。
+ * 拖动左边缘调整宽度，结果存储于 localStorage。
+ * 拖动过程中仅修改变量并把画布元素拉满（视觉上跟随），
+ * 松手后才重新计算画布像素 —— 逐帧重算等同于逐帧整张重新合成，开销过大。
  */
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 560;
@@ -2009,9 +2144,10 @@ function applySidebarWidth(w) {
   return sidebarW;
 }
 
-/* 色轮跟着宽度走，但只长一点。
- * 侧栏缺的是「高度」不是「宽度」，轮子长大一截就把下面的图层面板顶出去了。
- * 260 时还是 176，越宽最多长到 220。 */
+/* 色轮宽度随侧栏变化，但增幅受限。
+ * 侧栏的瓶颈在「高度」而非「宽度」，色轮显著增大将把下方图层面板挤出可视区域。
+ * 侧栏为 260 时色轮为 176，随宽度增加最多增至 220。
+ */
 function wheelSizeFor(w) {
   const content = w - 24;                 // 面板左右内边距
   const prefer = 176 + Math.max(0, w - 260) * 0.35;
@@ -2058,11 +2194,11 @@ picker.resize(wheelSizeFor(sidebarW));   // 存过宽度的话，色轮一开始
 })();
 
 /* ---------- 保存 / 打开 ----------
- * 打开时最关键的一条：**先完整解析成功，再替换当前文档**。
- * 解析中途抛异常的话，用户手上这张画一个字都不会动。
+ * 打开时的关键约束：**必须先完整解析成功，再替换当前文档**。
+ * 若解析中途抛出异常，用户当前画布内容不会发生任何变化。
  */
-/* 轻量提示条。不能写状态栏 —— paint() 每帧都会把 st-mem 改回「撤销 X MB」，
- * 错误信息一帧就被冲掉了。 */
+/* 轻量提示条。不可写入状态栏 —— paint() 每帧都会将 st-mem 重置为「撤销 X MB」，
+ * 错误信息在一帧内即被覆盖。 */
 function toast(msg, kind) {
   let el = document.getElementById('achi-toast');
   if (!el) {
@@ -2078,7 +2214,7 @@ function toast(msg, kind) {
   toast._t = setTimeout(() => el.classList.remove('show'), kind === 'error' ? 7000 : 3200);
 }
 
-/* 忙碌态：变暗 + 转圈光标，图标原样留着 */
+/* 忙碌态：整体变暗 + 转圈光标，图标保持不变 */
 function setBusy(btn, on) {
   if (!btn) return;
   btn.classList.toggle('busy', on);
@@ -2101,8 +2237,8 @@ function setDocName(name) {
 
 async function doSave(forceDialog = false) {
   const btn = $('btn-save');
-  /* 只改状态，绝不动内容：这几个按钮里是 <svg>，没有 textContent，
-   * 一旦 textContent = '保存中…' 就把图标整个删了，finally 也恢复不回来。 */
+  /* 仅修改状态，不得改动按钮内容：这些按钮内部为 <svg>，没有 textContent，
+   * 一旦赋值 textContent = '保存中…' 将删除整个图标，且 finally 中也无法恢复。 */
   setBusy(btn, true);
   try {
     const blob = await serialize(doc, {
@@ -2116,11 +2252,11 @@ async function doSave(forceDialog = false) {
     const r = await saveFile(blob, { name: docName, forceDialog });
     if (r.saved) {
       op('文件', '保存', r.name + (r.path ? '' : '(无路径)'));
-      // 保存成功才改名字；下载兜底时保留原名
+      // 仅在保存成功时修改文件名；降级为下载时保留原名
       if (!r.download) setDocName(r.name.replace(/\.achi$/i, ''));
       markDirty(false);
       pushRecent({ name: r.name, path: r.path || null, w: doc.w, h: doc.h });
-      // 明确告诉用户存哪了 —— 没有反馈的话「存了没」根本看不出来
+      // 明确告知用户保存位置 —— 缺少反馈时无法判断是否已保存
       toast(r.path
         ? `已保存：${r.path}`
         : r.download ? `已下载：${r.name}` : `已保存：${r.name}`);
@@ -2134,15 +2270,15 @@ async function doSave(forceDialog = false) {
   }
 }
 
-/* 把一份解析好的文档装上。调用方保证 parse 已经成功。 */
-/* 判断是不是 .achi：只看前 4 个字节的 magic，别猜扩展名 */
+/* 装载一份已解析完成的文档。调用方须保证 parse 已成功。 */
+/* 判断是否为 .achi：仅检查前 4 个字节的 magic，不依据扩展名推断 */
 function isAchiFile(bytes) {
   return bytes.length >= 4
     && bytes[0] === 0x41 && bytes[1] === 0x43 && bytes[2] === 0x48 && bytes[3] === 0x49;
 }
 
-/* 把一张普通图片变成新文档：尺寸跟图走，图铺在背景层上。
- * 这是描图/参考最常见的入口 —— 打开一张图就能在上面接着画。 */
+/* 将普通图片转换为新文档：尺寸随图片，图片铺在背景层上。
+ * 这是描图与参考最常用的入口 —— 打开图片即可在其上继续绘制。 */
 async function openImageAsDocument(bytes, name) {
   let bmp;
   try {
@@ -2159,7 +2295,7 @@ async function openImageAsDocument(bytes, name) {
   const imgDoc = new Doc(bmp.width, bmp.height, { background: 'white' });
   const bg = imgDoc.root.children[0];
   bg.name = name.replace(/\.[^.]+$/, '');   // 图层名跟着文件名走，比都叫「背景」有用
-  // ctx 已经平移到整图坐标，直接整张画，浏览器会按块裁
+  // ctx 已平移至整图坐标，直接整张绘制，由浏览器按块裁剪
   bg.canvas.forEachTileInBounds(0, 0, bmp.width, bmp.height, ctx => {
     ctx.drawImage(bmp, 0, 0);
   });
@@ -2172,20 +2308,32 @@ async function openImageAsDocument(bytes, name) {
 
 /**
  * @param {object} opts
- *   opts.fitView  没有自带视图的文档（图片导入的）要适应窗口，
- *                 否则沿用默认 view 就从左上角按 100% 摊开，一眼看不全。
+ *   opts.fitView  对未携带视图参数的文档（如图片导入）需适应窗口，
+ *                 否则沿用默认 view 将从左上角按 100% 展开，无法完整显示。
  */
 function installDocument(loaded, name, path, opts = {}) {
-  // 浮动块挂在旧图层上，换文档前必须丢掉，否则会往已废弃的瓦片上写
+  // 浮动块挂载在旧图层上，切换文档前必须丢弃，否则会写入已废弃的瓦片
   if (floating) { floating = null; syncFloatBar(); }
+
+  /* 释放上一份文档占用的资源。
+   * 审计结论（audit/2026-11-20-audit.md 第 1.3 节）：原先仅置空 hk.canvas，
+   * wasm 内存依赖 FinalizationRegistry 回收，反复切换文档会持续增长。
+   * dispose() 主动释放 wasm 侧的画布与笔刷对象。
+   * dispose 会清空 hk.doc，因此必须在挂载新文档之前调用。 */
+  if (typeof hk.dispose === 'function') hk.dispose();
+  else { hk.canvas = null; hk.current = null; }
+
+  /* nodeById 以节点 id 为键缓存节点引用。旧文档的节点已无用途，
+   * 不清空会让被删除 / 被替换的图层无法被回收。 */
+  nodeById.clear();
+
   doc = loaded;
   hk.doc = doc;
-  hk.canvas = null;
-  hk.current = null;
 
   history.stack = [];
   history.index = -1;
   history.bytes = 0;
+  history.structCount = 0;
   stroke = null;
   pending = null;
   gesture = null;
@@ -2197,24 +2345,24 @@ function installDocument(loaded, name, path, opts = {}) {
 
   pushRecent({ name: name, path: path || null, w: doc.w, h: doc.h });
 
-  /* 任何入口装上了文档，启动浮层都该收起 —— 包括拖拽进来这条。
-   * 放在这里而不是每个调用点，是因为「忘记调」的代价是浮层赖着不走。 */
+  /* 任一入口装载文档后，启动浮层都应收起 —— 包括拖拽导入路径。
+   * 置于此处而非每个调用点，是因为遗漏调用的后果是浮层持续存在。 */
   if (splashRef) splashRef.hide();
 
-  /* 必须 redraw() 而不是 requestPaint()：新文档的 dirtyTiles 是空的，
-   * flushDirty 什么都不做，doc.off 里还留着上一张画的画面 ——
-   * 表现就是「打开之后一片空白，动一下才出来」。
-   * fit() 内部就会 redraw，所以走 fit 时不用再调一次。 */
+  /* 必须调用 redraw() 而非 requestPaint()：新文档的 dirtyTiles 为空，
+   * flushDirty 不会执行任何操作，doc.off 中仍保留上一张画的画面，
+   * 表现为「打开后一片空白，执行任一操作后才显示」。
+   * fit() 内部已调用 redraw，因此走 fit 路径时无需重复调用。 */
   if (opts.fitView) fit();
   else redraw();
 }
 
-/* 统一的「从字节打开」：文件对话框、最近列表、拖拽，全走这一条。
- * 返回 true 表示真的换了文档。 */
+/* 统一的「按字节打开」入口：文件对话框、最近列表、拖拽均走此处。
+ * 返回 true 表示文档已实际切换。 */
 async function openFromBuffer(buffer, name, path) {
   const bytes = new Uint8Array(buffer);
 
-  // 图片走另一条路：新建一个同尺寸文档，图铺在底层
+  // 图片走另一条路径：新建同尺寸文档，并将图片铺在底层
   if (bytes.length < 4 || !isAchiFile(bytes)) {
     await openImageAsDocument(bytes, name);
     return true;
@@ -2247,8 +2395,8 @@ async function doOpen(fromPath) {
 
 
 /* ---------- 命令 ----------
- * 标题栏图标、网页菜单、Electron 原生菜单、键盘快捷键，最后都汇到这一个分发器。
- * 加新命令只改这里 + ui/menubar.js 的 COMMANDS。
+ * 标题栏图标、网页菜单、Electron 原生菜单与键盘快捷键最终都汇总到该分发器。
+ * 新增命令只需修改此处与 ui/menubar.js 中的 COMMANDS。
  */
 let splashRef = null;
 
@@ -2291,7 +2439,7 @@ function runCommand(id) {
   }
 }
 
-/* 以画布中心为基准改缩放，别让内容跑出视野 */
+/* 以画布中心为基准调整缩放，避免内容移出视野 */
 function setZoom(z) {
   const stage = $('stage').getBoundingClientRect();
   const cx = (stage.width / 2 - doc.view.x) / doc.view.zoom;
@@ -2303,8 +2451,20 @@ function setZoom(z) {
   redraw();
 }
 
-function doUndo() { if (history.undo(doc.activeLeaf.canvas)) redraw(); }
-function doRedo() { if (history.redo(doc.activeLeaf.canvas)) redraw(); }
+/* 撤销 / 重做后必须重建图层面板：结构变更会改动图层树，
+ * 仅调用 redraw() 只刷新画布，面板会与实际状态不一致。 */
+function doUndo() {
+  if (!history.undo(doc.activeLeaf && doc.activeLeaf.canvas)) return;
+  renderLayers();
+  refreshThumbs(true);
+  redraw();
+}
+function doRedo() {
+  if (!history.redo(doc.activeLeaf && doc.activeLeaf.canvas)) return;
+  renderLayers();
+  refreshThumbs(true);
+  redraw();
+}
 
 $('btn-new').onclick = () => runCommand('file:new');
 $('btn-save').onclick = () => runCommand('file:save');
@@ -2316,19 +2476,19 @@ $('btn-export').onclick = () => runCommand('file:export');
 const menubar = new MenuBar($('tb-menus'), runCommand);
 
 
-/* Electron 原生菜单点下来的命令走这里 */
+/* Electron 原生菜单触发的命令由此处处理 */
 if (window.achiFile && window.achiFile.onMenu) {
   window.achiFile.onMenu(id => runCommand(id));
 }
 
 /* ---------- 开发者控制台 ----------
- * 独立窗口，不是浮层：浮层会压住画布，而且和主界面抢焦点。
- * 子窗口通过 window.opener.__achi 读主窗口的状态（同源，直接可用）。
+ * 使用独立窗口而非浮层：浮层会遮挡画布，并与主界面争夺焦点。
+ * 子窗口通过 window.opener.__achi 读取主窗口状态（同源，可直接访问）。
  */
 let consoleWin = null;
 
-/* 日志缓冲从一开始就存在 —— 否则「打开控制台之前发生的事」一条都看不到，
- * 而那恰恰是最需要看的（崩溃、报错通常发生在你还没打开控制台的时候）。 */
+/* 日志缓冲自启动时即存在 —— 否则「打开控制台之前发生的事件」将完全缺失，
+ * 而这部分往往最为关键（崩溃与报错通常发生在打开控制台之前）。 */
 const mainConsole = {
   logs: [],
   push(level, args) {
@@ -2337,15 +2497,15 @@ const mainConsole = {
       try { return JSON.stringify(a); } catch { return String(a); }
     }).join(' ');
     this.logs.push({ level, text, t: Date.now() });
-    // shift 每次都要搬 2000 个元素；攒到上限再一次性裁掉一批
+    // shift 每次需搬移 2000 个元素；改为达到上限后一次性裁剪一批
     if (this.logs.length > 2200) this.logs = this.logs.slice(-2000);
   },
   clear() { this.logs = []; },
 };
 
-/* 窗口之间用 BroadcastChannel 通信：
- * Electron 里窗口由主进程建（window.open 会被弹窗拦截），拿不到 opener；
- * 浏览器里 window.open 能用，但统一走频道比维护两条路省事。 */
+/* 窗口之间使用 BroadcastChannel 通信：
+ * Electron 中窗口由主进程创建（window.open 会被弹窗拦截），无法获取 opener；
+ * 浏览器中 window.open 可用，但统一走频道比维护两条路径更简单。 */
 const consoleBus = (() => {
   try { return new BroadcastChannel('achi-console'); } catch { return null; }
 })();
@@ -2420,7 +2580,7 @@ async function openDevConsole() {
   if (!consoleWin) toast('控制台窗口被拦截了，允许一下弹窗', 'error');
 }
 
-/* 四个级别全收 —— 控制台「全部」页要能看到操作流水，不能只有警告和错误 */
+/* 四个级别全部收集 —— 控制台「全部」页需呈现操作流水，不能仅保留警告与错误 */
 for (const level of ['log', 'info', 'warn', 'error']) {
   const orig = console[level].bind(console);
   console[level] = (...args) => {
@@ -2429,19 +2589,19 @@ for (const level of ['log', 'info', 'warn', 'error']) {
   };
 }
 
-/* 关键操作单独记一笔：文件、文档、工具、变换。
- * 这些不是 error，但出问题时「最后一步做了什么」往往才是线索。 */
+/* 关键操作单独记录：文件、文档、工具、变换。
+ * 这些不属于 error，但出现问题时「最后执行的操作」往往才是线索。 */
 /**
- * 操作流水：不是错误，但「最后做了什么」往往才是线索。
- * 用法：op('图层', '新建', name) —— 第一段是类别。
+ * 操作流水：并非错误，但「最后执行的操作」往往是定位问题的线索。
+ * 用法：op('图层', '新建', name) —— 第一个参数为类别。
  */
 function op(cat, ...parts) {
   mainConsole.push('op', ['[' + cat + '] ' + parts.join(' ')]);
 }
 
 /* ---------- 全局操作捕获 ----------
- * 光靠手动埋点会漏 —— 漏掉的那一步恰恰可能是「伪装成正常」的那个 bug。
- * 这里把点击、快捷键、落笔、滚轮都收一份，宁可吵也别缺。
+ * 仅依赖手动埋点会有遗漏，而遗漏的那一步可能正是表现为正常行为的缺陷。
+ * 此处统一记录点击、快捷键、落笔与滚轮事件，宁可冗余也不遗漏。
  */
 window.addEventListener('click', e => {
   const t = e.target && e.target.closest
@@ -2456,14 +2616,14 @@ window.addEventListener('click', e => {
 window.addEventListener('keydown', e => {
   const mods = (e.metaKey ? '⌘' : '') + (e.shiftKey ? '⇧' : '') + (e.altKey ? '⌥' : '') + (e.ctrlKey ? '⌃' : '');
   const k = e.key.length === 1 ? e.key : e.key;
-  // 只记「有修饰键」或「会改状态的单键」，纯字母输入太吵
+  // 仅记录「带修饰键」或「会改变状态的单键」；纯字母输入噪声过大
   if (mods || ['Escape', 'Enter', 'Delete', 'Backspace'].includes(k)
       || Object.prototype.hasOwnProperty.call(TOOL_KEYS, k.toLowerCase())) {
     op('按键', mods + k);
   }
 }, true);
 
-/* 滚轮缩放节流记：手一滑能出几十条 */
+/* 滚轮缩放节流记录：一次滑动即可产生数十条日志 */
 let wheelOpAt = 0;
 window.addEventListener('wheel', e => {
   const now = performance.now();
@@ -2478,16 +2638,16 @@ window.addEventListener('unhandledrejection', e => {
   mainConsole.push('error', ['未处理的 Promise 拒绝: ' + String(e.reason)]);
 });
 
-/* 未保存标记：目前只在保存/新建/打开时清，笔一落就算脏 */
+/* 未保存标记：当前仅在保存 / 新建 / 打开时清除，任一落笔即标记为脏 */
 function markDirty(v) {
   const el = $('tb-dirty');
   if (el) el.toggleAttribute('hidden', !v);
 }
 
 /* ---------- 新建文档 ----------
- * 直接把 doc 换成新的，然后把唯一一个外部引用（hk.doc）接上。
- * hk 的 surface 尺寸变了会在 ensureSurface 里自己重建；同尺寸时要手动丢弃，
- * 否则上一张画的内容还留在里面。
+ * 直接将 doc 替换为新对象，并接上唯一的外部引用（hk.doc）。
+ * hk 的 surface 在尺寸变化时由 ensureSurface 自行重建；尺寸相同时需手动丢弃，
+ * 否则上一张画的内容会残留其中。
  */
 function newDocument(w, h, opts = {}) {
   if (floating) { floating = null; syncFloatBar(); }
@@ -2497,14 +2657,22 @@ function newDocument(w, h, opts = {}) {
   hk.doc = doc;
   hk.canvas = null;
   hk.current = null;
+  /* 上一份文档可能正处于绘制中：若不终止，drawEnd 会把残留笔迹压进新文档。 */
+  hk.active = false;
 
+  /* 重置撤销栈。注意 structCount 必须一并归零 ——
+   * 它由 recompute() 依据栈内容维护，栈被清空后若不重置，
+   * 后续的结构淘汰会以为还有大量结构记录而误删。 */
   history.stack = [];
   history.index = -1;
   history.bytes = 0;
+  history.structCount = 0;
 
   stroke = null;
   pending = null;
   gesture = null;
+  /* 选中的工具若为框选，上一份文档的选区会残留并影响后续绘制。 */
+  doc.selection = null;
 
   setDocName(opts.name || '未命名');
   markDirty(false);
@@ -2519,13 +2687,13 @@ window.addEventListener('resize', resize);
 resize();
 fit();
 renderLayers();
-/* 初始工具也用 setTool 走一遍：以前这里是直接写 style.borderColor，
- * 内联样式压过 .on 类，导致切走之后画笔按钮还亮着，变成两个同时高亮。 */
+/* 初始工具同样通过 setTool 设置：原实现直接写入 style.borderColor，
+ * 内联样式优先级高于 .on 类，导致切换工具后画笔按钮仍保持高亮，出现两个同时高亮的按钮。 */
 setTool('brush');
 $('st-size').textContent = doc.w + ' × ' + doc.h;
 initHokusai();
 
-/* 启动浮层总是建出来（菜单里的「新建」要用它），只是不一定显示 */
+/* 启动浮层始终创建（菜单中的「新建」依赖它），但不一定显示 */
 {
   const splash = splashRef = new Splash({
     defaultSize: { w: DW, h: DH },
@@ -2537,14 +2705,14 @@ initHokusai();
           await deleteFile(entry.path);
         } catch (e) {
           toast('删除文件失败：' + (e && e.message || e), 'error');
-          // 文件删不掉就别把记录也抹了，否则用户找不到它
+          // 文件删除失败时不要同时移除记录，否则用户将无法定位该文件
           return;
         }
       }
       removeRecent(entry);
       splash.refreshRecent();
     },
-    /* 打开成功才收起浮层：失败的话（坏文件）还留在原地，用户能继续选别的 */
+    /* 仅在打开成功时收起浮层：失败时（如文件损坏）保持原状，用户可继续选择其它文件 */
     onOpen: async () => { if (await doOpen()) splash.hide(); },
     onOpenRecent: async (entry) => { if (await doOpen(entry.path)) splash.hide(); },
   });
