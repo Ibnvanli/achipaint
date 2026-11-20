@@ -16,8 +16,12 @@
 | [2026-11-20-devconsole-response.md](2026-11-20-devconsole-response.md) | 2026-11-20 | 对控制台审查的处置说明 |
 | [2026-11-21-devconsole-recheck.md](2026-11-21-devconsole-recheck.md) | 2026-11-21 | 复查：控制台处置验证（含测试有效性验证） |
 | [2026-11-20-devconsole-response.md](2026-11-20-devconsole-response.md) | 2026-11-20 | 对控制台审查的处置说明 |
+| [2026-11-21-pressure-debug.md](2026-11-21-pressure-debug.md) | 2026-11-21 | 压感与笔迹缺陷的调试记录（含 4 次改错回退） |
 
 阅读顺序即上表顺序：审计 → 处置 → 复查 → 复查处置。
+
+`2026-11-21-pressure-debug.md` 性质不同：它不是审计，是一份**调试记录**，
+重点记录「怎么修错的」，可作为踩坑样本单独阅读。
 
 ## 约定
 
