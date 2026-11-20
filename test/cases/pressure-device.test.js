@@ -108,7 +108,9 @@ const CASES = {
     if (!hk.ready) return;
 
     const view = document.getElementById('view');
-    achi.penPressureUsable = null;
+    /* 判定为「有压感」后才会采信真实值 —— 未判定时整笔按满压画，
+     * 这是为了避免同一笔内部粗细突变。 */
+    achi.penPressureUsable = true;
     const seq = [];
     for (let i = 0; i < 20; i++) seq.push(0.2 + i * 0.04);
 
@@ -120,4 +122,79 @@ const CASES = {
     assert(Math.min(...seen) < 0.6,
       `低压力应被采信，实际最小值 ${Math.min(...seen)}`);
   },
+};
+
+/* ---------- 笔画内部压力必须一致 ----------
+ *
+ * 曾在判定未完成时做途中切换：开头按满压、一旦观测到压力变化就改用真实值。
+ * 结果每笔都是「一端粗、后面细」的蝌蚪形，像棉签拖尾。
+ * 现在判定只跨笔画生效 —— 一笔结束才结算，下一笔按结论走。
+ */
+
+/* 画一笔，返回引擎收到的压力序列 */
+async function strokePressures(hk, view, pressureAt, steps = 12) {
+  const seen = [];
+  const oM = hk.move.bind(hk);
+  hk.move = (x, y, p, o) => { seen.push(+p.toFixed(3)); return oM(x, y, p, o); };
+
+  try {
+    const r = view.getBoundingClientRect();
+    const cx = r.left + r.width / 2 - 120;
+    const cy = r.top + r.height / 2;
+    const mk = (t, p, x, y, buttons = 1) => new PointerEvent(t, {
+      pointerType: 'pen', pressure: p, buttons, bubbles: true,
+      clientX: x, clientY: y, pointerId: 71,
+    });
+
+    view.dispatchEvent(mk('pointerdown', pressureAt(0), cx, cy));
+    for (let i = 1; i <= steps; i++) {
+      /* 留真实间隔：dtime 接近 0 时 libmypaint 不产生 dab */
+      await new Promise(r => setTimeout(r, 12));
+      view.dispatchEvent(mk('pointermove', pressureAt(i / steps), cx + i * 18, cy));
+    }
+    view.dispatchEvent(new PointerEvent('pointerup', {
+      pointerType: 'pen', pressure: pressureAt(1), buttons: 0, bubbles: true,
+      clientX: cx + steps * 18, clientY: cy, pointerId: 71,
+    }));
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  } finally {
+    hk.move = oM;
+  }
+  return seen;
+}
+
+CASES['笔画内部压力不发生中途切换'] = async ({ achi, assert }) => {
+  const hk = achi.hk;
+  const t0 = Date.now();
+  while (!hk.ready && Date.now() - t0 < 10000) await new Promise(r => setTimeout(r, 100));
+  assert(hk.ready, '引擎应就绪');
+
+  achi.penPressureUsable = null;   // 回到未判定状态
+  const view = document.getElementById('view');
+
+  /* 真压感设备：压力在变。整笔应当一致（第一笔按满压）。 */
+  const seq = await strokePressures(hk, view, t => 0.2 + t * 0.8);
+
+  const uniq = [...new Set(seq)];
+  assert(uniq.length === 1,
+    `笔画内部压力应一致，实际出现 ${uniq.length} 种取值：${uniq.join(',')}`);
+};
+
+CASES['判定后下一笔才改用真实压力'] = async ({ achi, assert }) => {
+  const hk = achi.hk;
+  if (!hk.ready) return;
+
+  achi.penPressureUsable = null;
+  const view = document.getElementById('view');
+
+  /* 第一笔：未判定 → 满压，且结束时结算为「有压感」 */
+  const first = await strokePressures(hk, view, t => 0.2 + t * 0.8);
+  assert([...new Set(first)].length === 1, '第一笔应整笔一致');
+  assert(achi.penPressureUsable === true, '第一笔结束应判定为有压感');
+
+  /* 第二笔：判定生效 → 采信真实压力 */
+  const second = await strokePressures(hk, view, t => 0.2 + t * 0.8);
+  const uniq = [...new Set(second)];
+  assert(uniq.length > 3,
+    `第二笔应采信真实压力，实际只有 ${uniq.length} 种取值`);
 };

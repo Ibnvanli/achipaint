@@ -309,31 +309,15 @@ function pressureOf(e) {
       pressureObs.n++;
     }
 
-    /* 已判定设备不给压力 → 按满压画。
-     * 但仍持续观察：若这一笔又观测到压力变化，说明换了笔或驱动更新了，
-     * 立即改判为可用。否则一旦误判就永久失效。 */
-    if (penPressureUsable === false) {
-      const variesNow = (pressureObs.max - pressureObs.min) > 0.01;
-      if (!variesNow) return 1;
-      penPressureUsable = true;
-      return p;
-    }
-
-    if (penPressureUsable === null) {
-      /* 尚未判定。
-       *
-       * 关键取舍：先按满压画，而不是先按 0.5 画。
-       * 压力恒为 0.5 表示设备没给数据，按 0.5 画会让 80px 的笔刷
-       * 细成十几像素 —— 看起来就是"没有压感"。
-       *
-       * 一旦观测到压力确实在变，立即认定为可用并切到真实值。
-       * 真压感设备最多开头一两个点偏粗，之后正常；
-       * 无压感设备全程满压，不会出现细线。 */
-      const varies = (pressureObs.max - pressureObs.min) > 0.01;
-      if (!varies) return 1;
-      penPressureUsable = true;
-      return p;
-    }
+    /* 尚未判定，或已判定设备不给压力 → 整笔一律按满压画。
+     *
+     * 关键是「整笔一致」：曾在这里做途中切换 —— 开头按满压、
+     * 一旦观测到压力变化就改用真实值。结果每笔都变成
+     * 「一端粗、后面细」的蝌蚪形，看起来像棉签拖尾。
+     *
+     * 判定因此改为只跨笔画生效：一笔结束才结算，
+     * 下一笔按结论走。笔画内部绝不改变压力来源。 */
+    if (penPressureUsable !== true) return 1;
 
     return valid ? p : 1;
   }
