@@ -30,7 +30,6 @@
   border-bottom: 1px solid var(--line-1);
 }
 .dc-title { font-weight: 600; color: var(--fg-0); }
-.dc-fps { color: var(--accent); }
 .dc-spacer { flex: 1; }
 
 .dc-btn {
@@ -44,24 +43,6 @@
   cursor: pointer;
 }
 .dc-btn:hover { border-color: var(--accent); color: var(--fg-0); }
-
-.dc-tabs {
-  display: flex;
-  gap: 1px;
-  padding: 0 var(--s-2);
-  background: var(--bg-1);
-  border-bottom: 1px solid var(--line-1);
-}
-.dc-tab {
-  padding: 4px 10px;
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--fg-2);
-  font: inherit;
-  cursor: pointer;
-}
-.dc-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
 
 .dc-body { flex: 1; overflow: hidden; }
 .dc-pane {
@@ -85,28 +66,6 @@
 .dc-error .dc-time { color: #ff8a8a; }
 .dc-error span:last-child { color: #ffb3b3; }
 .dc-warn span:last-child { color: #e8c07a; }
-
-.dc-section {
-  margin: 8px 0 4px;
-  padding-bottom: 3px;
-  color: var(--fg-2);
-  border-bottom: 1px solid var(--line-1);
-  letter-spacing: .04em;
-}
-.dc-section:first-child { margin-top: 0; }
-
-.dc-kv {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--s-3);
-  padding: 2px 0;
-}
-.dc-kv span { color: var(--fg-2); }
-.dc-kv b { font-weight: 500; color: var(--fg-0); text-align: right; }
-.dc-kv.warn b { color: #e8c07a; }
-
-.dc-actions { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
-.dc-actions .dc-btn { height: 24px; text-align: left; padding: 0 8px; }
 
 
 /* ---------- 独立窗口形态 ---------- */
