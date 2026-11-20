@@ -17,6 +17,11 @@ const state = {
   lastSeen: 0,
 };
 
+/* 日志区是否应自动跟随到底部。
+ * 用户滚动到接近底部时置为 true（跟随新日志），
+ * 向上翻阅超过阈值则置为 false（保持视口不动）。 */
+let stickToBottom = true;
+
 let bus = null;
 try { bus = new BroadcastChannel('achi-console'); } catch { /* 环境不支持 */ }
 
@@ -110,10 +115,31 @@ function matchFilter(L) {
   return FILTER_OF[L.level] === state.filter;
 }
 
-function renderLog() {
+/* 渲染日志列表。
+ *
+ * 只在内容确实变化时重建 DOM。
+ * 主循环每 500ms 调一次 render()，若无条件重建：
+ *   1) 静止界面也在持续产生 DOM 变动（实测 1.5 秒内 24 次）
+ *   2) 每次重建都会把滚动位置拉回底部，用户向上翻阅时会被反复拽回去
+ * 因此用一个内容签名做短路判断。 */
+let lastLogSignature = '';
+
+function logSignature(list) {
+  /* 签名只需反映「显示内容是否变化」。日志为追加式，末条的序号与总数
+   * 足以判断；配合筛选条件，切换筛选时也能正确触发重建。 */
+  const last = list.length ? list[list.length - 1] : null;
+  return `${state.filter}|${list.length}|${last ? last.t : 0}`;
+}
+
+function renderLog(force = false) {
   const el = panes.log;
-  el.innerHTML = '';
   const list = state.logs.filter(matchFilter).slice(-300);
+
+  const sig = logSignature(list);
+  if (!force && sig === lastLogSignature) return;
+  lastLogSignature = sig;
+
+  el.innerHTML = '';
   for (const L of list) {
     const r = document.createElement('div');
     r.className = 'dc-row dc-' + L.level;
@@ -124,7 +150,10 @@ function renderLog() {
     r.lastChild.textContent = L.text;
     el.appendChild(r);
   }
-  el.scrollTop = el.scrollHeight;
+  /* 仅当用户本就停在底部时才自动跟随。
+   * 无条件滚动到底部会让「向上翻看历史」在每条新日志到达时被打断 ——
+   * 日志是持续追加的，这个体验问题会一直存在。 */
+  if (stickToBottom) el.scrollTop = el.scrollHeight;
   if (!list.length) {
     const msg = {
       all: '还没有日志。',
@@ -228,9 +257,21 @@ function render() {
   else if (state.tab === 'act') renderAct();
   else renderLog();
 
-  // 连接状态：超过 3 秒未收到快照即判定为断开
+  /* 连接状态分三种，此前「从未连上」与「连过又断」共用同一句「主窗口无响应」，
+   * 会让人误以为刚发生了故障（审查报告 3.2）。
+   *
+   *   从未收到过快照   → 未连接（对端可能根本没启动）
+   *   收到过且 3 秒内  → 已连接
+   *   收到过但已超时   → 连接中断（对端曾存在，现已失联）
+   */
   const alive = state.lastSeen && (Date.now() - state.lastSeen < 3000);
-  linkEl.textContent = alive ? '已连接' : '主窗口无响应';
+  if (alive) {
+    linkEl.textContent = '已连接';
+  } else if (!state.lastSeen) {
+    linkEl.textContent = '未连接';
+  } else {
+    linkEl.textContent = '连接中断';
+  }
   linkEl.classList.toggle('off', !alive);
 }
 
@@ -264,10 +305,18 @@ host.querySelectorAll('.dc-tab').forEach(t => {
 
 syncFilterBar();
 
+/* 阈值 24px：容差范围内仍视为「在底部」，避免因行高取整导致判定反复跳变。 */
+panes.log.addEventListener('scroll', () => {
+  const el = panes.log;
+  stickToBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 24;
+});
+
 document.getElementById('dc-clear').onclick = () => {
   state.logs = [];
+  lastLogSignature = '';        // 强制下一次重建，避免空列表与旧签名相同
+  stickToBottom = true;         // 清空后回到跟随状态
   if (bus) bus.postMessage({ type: 'clear' });
-  renderLog();
+  renderLog(true);
 };
 
 const pauseBtn = document.getElementById('dc-pause');
@@ -278,3 +327,14 @@ pauseBtn.onclick = () => {
 
 setInterval(() => { poll(); render(); }, 500);
 poll();
+
+/* 测试接口：供自动化用例走真实的日志追加与渲染路径。
+ * 直接操作 DOM 无法验证滚动行为 —— 下一次重建会把手工插入的节点清掉。 */
+window.__dcTest = {
+  pushMany(n) {
+    for (let i = 0; i < n; i++) {
+      pushLocal('info', '测试日志 ' + i + ' ' + Date.now());
+    }
+  },
+  get stickToBottom() { return stickToBottom; },
+};

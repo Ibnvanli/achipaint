@@ -13,6 +13,7 @@
 | [2026-11-20-structure-undo.md](2026-11-20-structure-undo.md) | 2026-11-20 | 复查：结构撤销与资源清理（首份审计的修复验证） |
 | [2026-11-20-structure-undo-response.md](2026-11-20-structure-undo-response.md) | 2026-11-20 | 对上述复查的处置说明 |
 | [2026-11-20-devconsole.md](2026-11-20-devconsole.md) | 2026-11-20 | 审查：开发者控制台（页签、筛选、探针自锁） |
+| [2026-11-20-devconsole-response.md](2026-11-20-devconsole-response.md) | 2026-11-20 | 对控制台审查的处置说明 |
 
 阅读顺序即上表顺序：审计 → 处置 → 复查 → 复查处置。
 
