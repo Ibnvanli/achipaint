@@ -1815,6 +1815,16 @@ function layerProps(node) {
   return wrap;
 }
 
+/* 渲染属性条到固定槽位。
+ * 槽位位于滚动容器之外，因此属性条不会遮住任何图层行。
+ * node 为空时清空槽位。 */
+function renderPropsSlot(node) {
+  const slot = $('lay-props-slot');
+  if (!slot) return;
+  slot.innerHTML = '';
+  if (node) slot.appendChild(layerProps(node));
+}
+
 /* 仅更新选中态：刷新高亮并将属性条移至新选中行下方，
  * 其余行元素保持不变（双击重命名依赖这一行为）。 */
 function selectNode(node) {
@@ -1824,16 +1834,17 @@ function selectNode(node) {
   box.querySelectorAll('.lay-row').forEach(r => {
     r.classList.toggle('on', r.dataset.uid === uidOf(node));
   });
-  // 属性条固定在列表顶部（吸附），不插入行之间 ——
-  // 若插入选中行下方，会使其后所有行下移，导致下一次点击落空。
-  box.querySelectorAll('.lay-props').forEach(p => p.remove());
-  box.prepend(layerProps(node));
+  /* 属性条渲染在滚动容器之外的固定槽位。
+   * 此前它作为 #layers 的首个子元素并设 position: sticky，滚动时会盖住
+   * 滚到它下方的行 —— 行的眼睛按钮正好在最左侧，被遮后无法点击。
+   * 移到槽位后属性条不参与滚动，行永远滚不到它下面。 */
+  renderPropsSlot(node);
 }
 
 function renderLayers() {
   const box = $('layers');
   box.innerHTML = '';
-  if (doc.selected) box.appendChild(layerProps(doc.selected));
+  renderPropsSlot(doc.selected);
   const walk = (nodes, depth) => {
     for (const n of nodes) {
       box.appendChild(layerRow(n, depth));

@@ -396,10 +396,17 @@ html.electron .titlebar select {
 .lay-tools { display: flex; gap: var(--s-1); margin-left: auto; }
 /* 高度由 .panel.layers 的弹性分配决定，此处无需再固定 */
 
-/* 选中行下面的属性条 */
-/* 吸在列表顶部：滚列表时它不动，行也不会因为选中而跳位 */
+/* 选中图层后的属性条 */
+/* 渲染在滚动容器之外的固定槽位里，因此不需要 sticky：
+ * 它本来就不动，行也永远滚不到它下面。
+ * 此前它是 #layers 的首个子元素 + position: sticky，
+ * 滚动时会盖住下方的行，行的眼睛按钮被遮后无法点击。 */
+.lay-props-slot {
+  flex: 0 0 auto;
+  padding: 0 var(--s-3);
+}
+.lay-props-slot:empty { display: none; }
 .lay-props {
-  position: sticky; top: 0; z-index: 2;
   margin: 0 0 var(--s-2) 0;
   padding: var(--s-1) var(--s-2);
   background: var(--bg-0);
@@ -409,7 +416,6 @@ html.electron .titlebar select {
 .lay-props .bslider { margin-bottom: var(--s-1); }
 /* 标签压在琥珀填充上，别再用 fg-2，不然深底浅字反着来 */
 .lay-props .lp-op .bs-label { color: var(--fg-0); }
-.lay-props { box-shadow: 0 2px 0 var(--bg-1); }
 .lp-row { display: flex; align-items: center; gap: var(--s-1); }
 .lp-mode {
   flex: 1; min-width: 0; height: 22px;
@@ -526,8 +532,11 @@ html.electron .titlebar select {
 .panel.collapsed > h3::before { content: '▸'; }
 .panel.collapsed > .body { display: none; }
 
-/* 画布 */
-canvas { display: block; position: absolute; inset: 0; }
+/* 主画布 */
+/* 只对 #view 生效。此前写成全局 `canvas { position: absolute; inset: 0 }`，
+ * 把所有 canvas 都拉成绝对定位 —— 图层缩略图也是 canvas，
+ * 因此脱离 flex 流、贴到行的左上角，与相邻元素错位且不参与布局。 */
+#view { display: block; position: absolute; inset: 0; }
 
 /* 状态条 */
 .statusbar .sep { width: 1px; height: 12px; background: var(--line-2); }
