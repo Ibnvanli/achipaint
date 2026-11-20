@@ -15,7 +15,6 @@
 | [2026-11-20-devconsole.md](2026-11-20-devconsole.md) | 2026-11-20 | 审查：开发者控制台（页签、筛选、探针自锁） |
 | [2026-11-20-devconsole-response.md](2026-11-20-devconsole-response.md) | 2026-11-20 | 对控制台审查的处置说明 |
 | [2026-11-21-devconsole-recheck.md](2026-11-21-devconsole-recheck.md) | 2026-11-21 | 复查：控制台处置验证（含测试有效性验证） |
-| [2026-11-20-devconsole-response.md](2026-11-20-devconsole-response.md) | 2026-11-20 | 对控制台审查的处置说明 |
 | [2026-11-21-pressure-debug.md](2026-11-21-pressure-debug.md) | 2026-11-21 | 压感与笔迹缺陷的调试记录（含 4 次改错回退） |
 
 阅读顺序即上表顺序：审计 → 处置 → 复查 → 复查处置。
