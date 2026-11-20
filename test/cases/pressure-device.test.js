@@ -167,3 +167,75 @@ CASES['起笔不出现粗圆点'] = async ({ achi, assert }) => {
   assert(headMax < median * 1.4,
     `起笔不应鼓出粗圆点：开头 ${headMax}px vs 线身 ${median}px`);
 };
+
+/* ---------- 抬笔末端圆点 ----------
+ *
+ * 稳定器会让落笔点滞后于笔尖，抬笔时这段滞后会一次补画。
+ * 若补画用最后一个压力（抬笔前常是峰值），末端会突然鼓成一个圆点 ——
+ * 而且因为滞后位移集中在最后，这个圆点会比线身粗一大截、位置还在笔画之外。
+ *
+ * 修法：抬笔前先用近期压力的中位数补到真实笔尖位置，再冲刷 slow_tracking。
+ * 中位数让单个尖峰影响不到整段补画。
+ */
+
+CASES['抬笔后末端不鼓圆点'] = async ({ achi, assert }) => {
+  const hk = achi.hk;
+  const t0 = Date.now();
+  while (!hk.ready && Date.now() - t0 < 10000) await new Promise(r => setTimeout(r, 100));
+  assert(hk.ready, '引擎应就绪');
+
+  const doc = achi.doc;
+  const layer = doc.activeLeaf.canvas;
+  const view = document.getElementById('view');
+  const r = view.getBoundingClientRect();
+  const cx = r.left + r.width / 2 - 200, cy = r.top + r.height / 2;
+
+  const ev = (t, p, x, y, b = 1) => new PointerEvent(t, {
+    pointerType: 'pen', pressure: p, buttons: b, bubbles: true,
+    clientX: x, clientY: y, pointerId: 105,
+  });
+
+  /* 压力平滑上升，模拟真实运笔 */
+  view.dispatchEvent(ev('pointerdown', 0.2, cx, cy));
+  for (let i = 1; i <= 22; i++) {
+    await new Promise(rr => setTimeout(rr, 12));
+    view.dispatchEvent(ev('pointermove', 0.2 + (i / 22) * 0.65, cx + i * 14, cy));
+  }
+  view.dispatchEvent(ev('pointerup', 0.85, cx + 308, cy, 0));
+  await new Promise(rr => requestAnimationFrame(() => requestAnimationFrame(rr)));
+
+  let minx = Infinity, maxx = -Infinity;
+  for (const t of layer.tiles.values()) {
+    const d = t.ctx.getImageData(0, 0, 256, 256).data;
+    for (let y = 0; y < 256; y++) {
+      for (let x = 0; x < 256; x++) {
+        if (d[(y * 256 + x) * 4 + 3] <= 10) continue;
+        const wx = t.col * 256 + x;
+        if (wx < minx) minx = wx;
+        if (wx > maxx) maxx = wx;
+      }
+    }
+  }
+  assert(maxx > minx, '应画出墨迹');
+
+  const prof = [];
+  for (let x = minx; x <= maxx; x += 14) {
+    let top = -1, bot = -1;
+    for (let y = 0; y < doc.h; y++) {
+      const c = Math.floor(x / 256), rr = Math.floor(y / 256);
+      const t = layer.tiles.get(c + ',' + rr);
+      if (!t) continue;
+      const d = t.ctx.getImageData(x - c * 256, y - rr * 256, 1, 1).data;
+      if (d[3] > 10) { if (top < 0) top = y; bot = y; }
+    }
+    prof.push(top < 0 ? 0 : bot - top + 1);
+  }
+
+  /* 末段取最后若干列的厚度，与全笔峰值比 —— 不该突然鼓出去 */
+  const body = prof.filter(v => v > 0);
+  const peak = Math.max(...body);
+  const tailMax = Math.max(...prof.slice(-4));
+
+  assert(tailMax < peak * 1.35,
+    `抬笔处不应鼓出圆点：末段 ${tailMax}px vs 全笔峰值 ${peak}px`);
+};

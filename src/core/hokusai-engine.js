@@ -85,6 +85,16 @@ export class HokusaiEngine {
     this.active = false;
     this.onRegion = null;         // (x0,y0,x1,y1) => void
     this.paintedTiles = 0;        // 统计用
+    /* 最近若干次压力的环形缓冲。抬笔时稳定器的滞后位移会一次性补画，
+     * 若用最后一个压力（常常是抬笔前的峰值），那一整段就会突然变粗，
+     * 形成末端的大圆点。用中位数补画，单个尖峰影响不到结果。 */
+    this._pBuf = [];
+    this._pBufLen = 0;
+    /* 本笔是否真的落下过 dab。由 wasm 的 strokeTo 返回值累积，
+     * 不能用 paintedTiles 判断 —— 后者靠每帧 pump() 累加，快速笔画
+     * 可能一次都没 pump 到，于是被误判成「什么都没画」，
+     * 抬笔时补画一个点，用的还是抬笔瞬间的压力。 */
+    this._dabbed = false;
   }
 
   /* 载入 wasm 与预设。失败时不抛出，记录于 this.error，主程序回退至旧引擎。 */
@@ -198,6 +208,9 @@ export class HokusaiEngine {
     this.moved = false;
     this.active = true;
     this.paintedTiles = 0;
+    this._dabbed = false;
+    this._pBuf = [pressure];
+    this._pBufLen = 1;
 
     /* 首次 strokeTo 仅播种状态，不落笔（libmypaint 的行为）。
      *
@@ -229,8 +242,13 @@ export class HokusaiEngine {
     if (Math.hypot(x - this.startX, y - this.startY) > 1.5) this.moved = true;
     this.lastX = x; this.lastY = y; this.lastPressure = pressure;
 
-    this.canvas.strokeTo(this.current, p.x, p.y, pressure,
-      opts.tiltX || 0, opts.tiltY || 0, dt);
+    /* 记入环形缓冲（保留最近 5 个） */
+    if (this._pBuf.length < 5) this._pBuf.push(pressure);
+    else { this._pBuf[this._pBufLen % 5] = pressure; }
+    this._pBufLen++;
+
+    if (this.canvas.strokeTo(this.current, p.x, p.y, pressure,
+      opts.tiltX || 0, opts.tiltY || 0, dt)) this._dabbed = true;
     // 此处**不**执行 pump：一个 pointermove 内可能包含十余个合并事件，
     // 若每个都搬运块并通知撤销层，将产生数十倍冗余开销。
     // 应由调用方在处理完一批事件后再调用一次 flush()。
@@ -246,7 +264,19 @@ export class HokusaiEngine {
     if (!this.active) return;
     this.active = false;
 
-    this.canvas.finishStroke(this.current);
+    /* 先把稳定器积压的位移补完，再冲刷 slow_tracking 尾巴。
+     *
+     * 稳定器会让落笔点滞后于笔尖，抬笔时这段滞后会一次补画。若直接用
+     * 最后一个压力（抬笔前常见峰值）补画，末端会突然鼓成一个圆点。
+     * 这里用近期压力均值补到真实笔尖位置，粗细才与线身连贯。 */
+    if (this.moved) {
+      const sorted = [...this._pBuf].sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      this.canvas.strokeTo(this.current, this.lastX, this.lastY, median,
+        0, 0, 0.016);
+    }
+
+    if (this.canvas.finishStroke(this.current)) this._dabbed = true;
     this.pump();
 
     // 单次点击也应产生一个点。多数 .myb 按「走过的距离」采样，
@@ -255,8 +285,15 @@ export class HokusaiEngine {
     // 这里的位移只用于「让按距离采样的笔刷认为走过了一小步」，越小越好。
     // 曾用 r * 0.55（半径的 55%），半径 40px 时点的中心会偏出点击位置 22px ——
     // 表现为落笔处莫名多出一个偏离笔尖的墨点。
-    if (this.paintedTiles === 0) {
+    //
+    // 判据用 _dabbed（wasm 如实回报是否落过 dab），不再是 paintedTiles。
+    // paintedTiles 靠 pump() 累加，快速笔画可能一次都没 pump 到，会误判成
+    // 「什么都没画」，于是抬笔时补一个点 —— 用当时的压力，压力高就是一个大圆。
+    if (!this._dabbed) {
       const nudge = Math.min(1, this.radiusPx * 0.02);
+      /* 这里用 lastPressure：真单击时它就是用户按下的力度，应当如实反映。
+       * 抬笔压力偏高只在「已经画了东西」的情况下才是干扰，
+       * 那种情况走的是上面的滞后补画，判据不同。 */
       this.canvas.strokeTo(this.current, this.lastX + nudge, this.lastY,
         this.lastPressure, 0, 0, 0.016);
       this.canvas.finishStroke(this.current);
