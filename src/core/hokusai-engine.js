@@ -45,6 +45,14 @@ function srgbToLinear(c) {
 }
 
 /* .myb 中的曲线：[[输入, 输出], ...]，采用线性插值。 */
+/* 收笔时的最小半径比例（相对满压力半径）。
+ *
+ * libmypaint 的 .myb 笔刷里，radius 随压力下降得很陡：压力趋近 0 时
+ * 半径也趋近 0，笔画末端会拖出一根细长的针尖。
+ * 这里给半径设一个下限，收笔时仍保持一定粗细，不至于细成发丝。
+ */
+const MIN_RADIUS_RATIO = 0.2;
+
 function curveValue(points, x) {
   if (!points || !points.length) return 0;
   if (x <= points[0][0]) return points[0][1];
@@ -162,6 +170,31 @@ export class HokusaiEngine {
 
   /* ---------- 单笔 ---------- */
 
+  /* 按当前压力抬高半径基准，保证半径不低于 min 比例。
+   *
+   * 半径公式：radius = radiusPx * exp(curve(p) - curve(1))
+   * 其中 curve 是 .myb 里 radius_logarithmic 的压力响应曲线。
+   * 压力低时 curve(p) 远小于 curve(1)，半径趋于 0，笔画收成针尖。
+   *
+   * 这里换算出需要抬多少，直接调 setRadiusLog —— 比改压力值精确：
+   * 只影响半径，不动 alpha、速度等其它压力响应。
+   */
+  applyRadiusFloor(pressure) {
+    const b = this.current;
+    if (!b) return;
+    if (!this._radiusCurve) {          // 没有曲线数据：保持满压力半径，不额外限制
+      if (this._radiusBaseLog !== undefined) b.setRadiusLog(this._radiusBaseLog);
+      return;
+    }
+    const p = Math.max(0, Math.min(1, pressure));
+    const dropped = curveValue(this._radiusCurve, p) - this._radiusCurveAtOne;
+    const target = Math.log(MIN_RADIUS_RATIO);
+    /* 每次都重设基准：上一次可能为了托住半径抬高了，这一次必须回到原位，
+     * 否则抬高的量会一路累积。 */
+    const adjust = dropped < target ? (target - dropped) : 0;
+    b.setRadiusLog(this._radiusBaseLog + adjust);
+  }
+
   begin(x, y, pressure, opts = {}) {
     if (!this.ready) return false;
     this.ensureSurface(this.doc.w, this.doc.h);
@@ -174,7 +207,23 @@ export class HokusaiEngine {
     // hokusai 内部使用 `setting.exp()`，而非 exp2。
     // 原实现按 log2 计算，导致 40px 半径被当作 exp(5.32) ≈ 204px，笔迹覆盖大幅超出预期。
     this.radiusPx = Math.max(0.5, (opts.size || 80) / 2);
-    b.setRadiusLog(this.radiusBaseFor(this.currentKey) + Math.log(this.radiusPx));
+    const baseLog = this.radiusBaseFor(this.currentKey) + Math.log(this.radiusPx);
+    b.setRadiusLog(baseLog);
+
+    /* 缓存半径压力曲线，供 applyRadiusFloor 逐点求下限。
+     * 曲线取不到（JSON 损坏）时退化为不限制。 */
+    this._radiusBaseLog = baseLog;
+    this._radiusCurve = null;
+    try {
+      const j = JSON.parse(this.presets.get(this.currentKey));
+      const rl = j && j.settings && j.settings.radius_logarithmic;
+      this._radiusCurve = (rl && rl.inputs && rl.inputs.pressure) || null;
+    } catch { /* 用不上就不限制 */ }
+    if (this._radiusCurve && this._radiusCurve.length) {
+      this._radiusCurveAtOne = curveValue(this._radiusCurve, 1);
+    } else {
+      this._radiusCurve = null;
+    }
 
     const { h, s, v } = hexToHsv(opts.color || '#000000');
     b.setColorHsv(h, s, v);
@@ -201,6 +250,7 @@ export class HokusaiEngine {
 
     // 首次 strokeTo 仅初始化状态，不落笔（libmypaint 的行为）
     const p = this.stab.push(x, y);
+    this.applyRadiusFloor(pressure);
     this.canvas.strokeTo(b, p.x, p.y, pressure, opts.tiltX || 0, opts.tiltY || 0, 0.0001);
     this.pump();
     return true;
@@ -220,6 +270,7 @@ export class HokusaiEngine {
     if (Math.hypot(x - this.startX, y - this.startY) > 1.5) this.moved = true;
     this.lastX = x; this.lastY = y; this.lastPressure = pressure;
 
+    this.applyRadiusFloor(pressure);
     this.canvas.strokeTo(this.current, p.x, p.y, pressure,
       opts.tiltX || 0, opts.tiltY || 0, dt);
     // 此处**不**执行 pump：一个 pointermove 内可能包含十余个合并事件，
@@ -248,6 +299,7 @@ export class HokusaiEngine {
     // 表现为落笔处莫名多出一个偏离笔尖的墨点。
     if (this.paintedTiles === 0) {
       const nudge = Math.min(1, this.radiusPx * 0.02);
+      this.applyRadiusFloor(this.lastPressure);
       this.canvas.strokeTo(this.current, this.lastX + nudge, this.lastY,
         this.lastPressure, 0, 0, 0.016);
       this.canvas.finishStroke(this.current);
