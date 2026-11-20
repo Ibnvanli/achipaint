@@ -23,6 +23,10 @@ Electron / Chromium
   https://www.electronjs.org/
   License: MIT
 
+fflate — MIT — https://github.com/101arrowz/fflate
+comlink — Apache-2.0 — https://github.com/GoogleChromeLabs/comlink
+perfect-freehand — MIT — https://github.com/steveruizok/perfect-freehand
+
 Rust standard library and wasm-bindgen
   Used by the compiled hokusai module.
   License: MIT / Apache-2.0
