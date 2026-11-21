@@ -7,6 +7,7 @@ import { HokusaiEngine } from './core/hokusai-engine.js';
 import { History } from './core/history.js';
 import { Bus, PluginHost } from './core/bus.js';
 import { DEFAULT_SWATCHES } from './core/color.js';
+import { Selection, magicWandMask } from './core/selection.js';
 import { Slider } from './ui/widgets.js';
 import { ColorPicker } from './ui/colorpicker.js';
 import { Splash, pushRecent, removeRecent } from './ui/splash.js';
@@ -201,16 +202,23 @@ function paint() {
 
     // 浮动选区绘制在最上层，随指针移动
     if (floating) {
+      /* 变换后的尺寸：缩放直接作用在绘制尺寸上，不改动原画布。
+       * 这样反复缩放不会累积重采样损失，落回时才做一次最终采样。 */
+      const sw = floating.w * floating.scaleX;
+      const sh = floating.h * floating.scaleY;
+      /* 中心按**原始**尺寸算：缩放只改大小，不该移动位置。
+       * 这与 commitFloating 里的算法必须一致，否则预览与落回会错位。 */
       const fcx = floating.x + floating.w / 2;
       const fcy = floating.y + floating.h / 2;
 
       vctx.save();
       vctx.translate(fcx, fcy);
       vctx.rotate(floating.angle * Math.PI / 180);
-      vctx.drawImage(floating.canvas, -floating.w / 2, -floating.h / 2);
+      vctx.imageSmoothingEnabled = true;      // 缩放时允许插值，避免锯齿
+      vctx.drawImage(floating.canvas, -sw / 2, -sh / 2, sw, sh);
       vctx.restore();
 
-      /* 变换框：随内容一同旋转的虚线框 + 四角手柄。
+      /* 变换框：随内容一同旋转的虚线框 + 八个手柄（四角缩放，四边单轴缩放）。
        * 这是「已选中」的视觉标识 —— 若仅有底部滑块，无法判断选中了哪一区域。 */
       vctx.save();
       vctx.translate(fcx, fcy);
@@ -219,15 +227,12 @@ function paint() {
       vctx.setLineDash([5 / zoom, 4 / zoom]);
       vctx.lineWidth = 1.5 / zoom;
       vctx.strokeStyle = 'rgba(223, 160, 60, .95)';
-      vctx.strokeRect(-floating.w / 2, -floating.h / 2, floating.w, floating.h);
+      vctx.strokeRect(-sw / 2, -sh / 2, sw, sh);
 
       vctx.setLineDash([]);
       vctx.fillStyle = '#dfa03c';
       const hs = 7 / zoom;
-      for (const [hx, hy] of [
-        [-floating.w / 2, -floating.h / 2], [floating.w / 2, -floating.h / 2],
-        [-floating.w / 2, floating.h / 2], [floating.w / 2, floating.h / 2],
-      ]) {
+      for (const [hx, hy] of floatingHandles(sw, sh)) {
         vctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
       }
       vctx.restore();
@@ -238,19 +243,48 @@ function paint() {
     vctx.lineWidth = 1 / zoom;
     vctx.strokeRect(0, 0, doc.w, doc.h);
 
-    // 框选：拖拽中的实时框与已确定的选框
-    const sel = (gesture && gesture.kind === 'select' && gesture.rect) ? gesture.rect : doc.selection;
-    if (sel && sel.x1 > sel.x0 && sel.y1 > sel.y0) {
-      vctx.save();
+    /* 选区轮廓。
+     *
+     * 拖拽中的矩形、以及套索的实时路径，都直接描边即可；
+     * 已确定的选区是蒙版，没有路径可描，改为把它画到一张临时画布上
+     * 再沿 alpha 边缘描边 —— 这样矩形、套索、魔棒三种来源共用一套画法。
+     */
+    vctx.save();
+    vctx.lineWidth = 1 / zoom;
+
+    const liveRect = (gesture && gesture.kind === 'select' && gesture.rect) ? gesture.rect : null;
+    const liveLasso = (gesture && gesture.kind === 'lasso' && gesture.points.length > 1) ? gesture.points : null;
+
+    const strokeDashed = (draw) => {
       vctx.setLineDash([6 / zoom, 4 / zoom]);
-      vctx.lineWidth = 1 / zoom;
       vctx.strokeStyle = 'rgba(0,0,0,.75)';
-      vctx.strokeRect(sel.x0, sel.y0, sel.x1 - sel.x0, sel.y1 - sel.y0);
+      draw();
       vctx.lineDashOffset = 5 / zoom;
       vctx.strokeStyle = 'rgba(255,255,255,.95)';
-      vctx.strokeRect(sel.x0, sel.y0, sel.x1 - sel.x0, sel.y1 - sel.y0);
-      vctx.restore();
+      draw();
+    };
+
+    if (liveRect && liveRect.x1 > liveRect.x0 && liveRect.y1 > liveRect.y0) {
+      strokeDashed(() => {
+        vctx.beginPath();
+        vctx.rect(liveRect.x0, liveRect.y0, liveRect.x1 - liveRect.x0, liveRect.y1 - liveRect.y0);
+        vctx.stroke();
+      });
+    } else if (liveLasso) {
+      strokeDashed(() => {
+        vctx.beginPath();
+        vctx.moveTo(liveLasso[0][0], liveLasso[0][1]);
+        for (let i = 1; i < liveLasso.length; i++) vctx.lineTo(liveLasso[i][0], liveLasso[i][1]);
+        vctx.closePath();
+        vctx.stroke();
+      });
+    } else if (doc.selection && !doc.selection.isEmpty()) {
+      const edge = selectionOutline(doc.selection);
+      if (edge) {
+        strokeDashed(() => vctx.drawImage(edge, 0, 0));
+      }
     }
+    vctx.restore();
   }
 
   $('st-zoom').textContent = Math.round(zoom * 100) + '%';
@@ -374,20 +408,49 @@ view.addEventListener('pointerdown', e => {
     zoomAt(e.clientX, e.clientY, e.altKey ? 1 / 1.3 : 1.3);
     return;
   }
-  if (tool === 'select') {
-    // 已存在浮动选区：在其范围内则拖动，在外部则先落回并重新框选
+  if (tool === 'select' || tool === 'lasso' || tool === 'wand') {
+    // 已存在浮动选区：先看是否抓到手柄（缩放），其次看是否在框内（拖动）
     if (floating) {
-      if (p.x >= floating.x && p.x <= floating.x + floating.w
-        && p.y >= floating.y && p.y <= floating.y + floating.h) {
+      const hid = hitHandle(p.x, p.y);
+      if (hid) {
+        gesture = {
+          kind: 'float-scale', handle: hid,
+          sx: floating.scaleX, sy: floating.scaleY,
+          x0: p.x, y0: p.y,
+          fx: floating.x, fy: floating.y,
+          fw: floating.w, fh: floating.h,
+          angle: floating.angle,
+        };
+        return;
+      }
+
+      const sw = floating.w * floating.scaleX;
+      const sh = floating.h * floating.scaleY;
+      const bx = floating.x + floating.w / 2 - sw / 2;
+      const by = floating.y + floating.h / 2 - sh / 2;
+      if (p.x >= bx && p.x <= bx + sw && p.y >= by && p.y <= by + sh) {
         gesture = { kind: 'float-move', x0: p.x, y0: p.y, fx: floating.x, fy: floating.y };
         return;
       }
       commitFloating();
     }
 
-    // 存在选区且落点在选区内 → 提取该区域
+    /* 魔棒：单击即按颜色扩散生成选区，没有拖拽过程 */
+    if (tool === 'wand') {
+      applyMagicWand(p.x, p.y, e.altKey);
+      return;
+    }
+
+    /* 套索：按下开始记录路径，抬起时闭合成多边形 */
+    if (tool === 'lasso') {
+      gesture = { kind: 'lasso', points: [[p.x, p.y]] };
+      requestPaint();
+      return;
+    }
+
+    // 矩形框选：已存在选区且落点在选区内 → 提取该区域
     const sel = doc.selection;
-    if (sel && p.x >= sel.x0 && p.x <= sel.x1 && p.y >= sel.y0 && p.y <= sel.y1) {
+    if (sel && !sel.isEmpty() && sel.contains(p.x, p.y)) {
       if (liftSelection()) {
         gesture = { kind: 'float-move', x0: p.x, y0: p.y, fx: floating.x, fy: floating.y };
       }
@@ -417,7 +480,7 @@ view.addEventListener('pointerdown', e => {
     if (!e.altKey && node) {
       const cb = connectedBounds(node.canvas, p.x, p.y);
       if (cb) {
-        doc.selection = cb;
+        doc.selection = Selection.fromRect(doc.w, doc.h, cb.x0, cb.y0, cb.x1, cb.y1);
         if (liftSelection()) {
           op('移动', '点选连通块', (cb.x1 - cb.x0) + '×' + (cb.y1 - cb.y0));
           gesture = { kind: 'float-move', x0: p.x, y0: p.y, fx: floating.x, fy: floating.y };
@@ -959,17 +1022,173 @@ function newCanvas(w, h) {
   return c;
 }
 
-/* 将选区内容从图层提取到浮动画布，并清空原位置 */
+/* ---------- 选区轮廓 ----------
+ *
+ * 蒙版没有路径，但用户需要看到「选了哪儿」。
+ * 做法：找出所有「选中像素与未选中像素相邻」的边界，
+ * 生成一张只含这些边界的 canvas，绘制时直接贴上去。
+ *
+ * 不用 ctx.clip + 描边的原因：魔棒的边缘是像素级锯齿，
+ * 路径描边会把锯齿平滑掉，反而看不清真实边界。
+ * 直接画边界像素，所见即所选。
+ *
+ * 结果按选区对象缓存，蒙版不变就不重算。
+ */
+const outlineCache = new WeakMap();
+
+function selectionOutline(sel) {
+  if (outlineCache.has(sel)) return outlineCache.get(sel);
+
+  const bb = sel.bbox();
+  if (!bb) { outlineCache.set(sel, null); return null; }
+
+  const cv = newCanvas(sel.w, sel.h);
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(sel.w, sel.h);
+  const d = img.data;
+  const m = sel.mask;
+  const { w, h } = sel;
+
+  /* 边界判定：自身选中，且四邻中至少一个未选中（越界视为未选中）。
+   * 这样得到的是一圈单像素宽的轮廓。 */
+  for (let y = bb.y0; y < bb.y1; y++) {
+    const row = y * w;
+    for (let x = bb.x0; x < bb.x1; x++) {
+      if (!m[row + x]) continue;
+      const edge =
+        x === 0 || !m[row + x - 1] ||
+        x === w - 1 || !m[row + x + 1] ||
+        y === 0 || !m[row - w + x] ||
+        y === h - 1 || !m[(y + 1) * w + x];
+      if (!edge) continue;
+      const p = (row + x) * 4;
+      d[p] = 255; d[p + 1] = 255; d[p + 2] = 255; d[p + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  outlineCache.set(sel, cv);
+  return cv;
+}
+
+/* ---------- 魔棒 ----------
+ *
+ * 从点击位置取色，按容差把相连的近似色像素纳入选区。
+ * 取色源是**合成层**（doc.off）而非当前图层：
+ * 用户看到的是合成结果，按视觉选更符合预期。
+ *
+ * ⌥ 点击 = 全图同色（不要求连通），用于选住散布各处的同一颜色。
+ */
+function applyMagicWand(x, y, global = false) {
+  const off = doc.off;
+  if (!off) return;
+  const ctx = off.getContext('2d');
+  const img = ctx.getImageData(0, 0, doc.w, doc.h);
+  const tol = Number($('wand-tol')?.value ?? 32);
+  const mask = magicWandMask(img.data, doc.w, doc.h, x, y, tol, !global);
+  const sel = Selection.fromMask(doc.w, doc.h, mask);
+  const b = sel.bbox();
+  doc.selection = b ? sel : null;
+  op('选区', '魔棒 ' + (b ? (b.x1 - b.x0) + '×' + (b.y1 - b.y0) : '空')
+    + (global ? ' 全图' : ''));
+  requestPaint();
+}
+
+/* 对二值蒙版做一次 3×3 均值，得到带过渡的边缘。
+ *
+ * 只在「边界像素」上计算 —— 完全在内部或完全在外部的像素结果不变，
+ * 跳过它们能省掉绝大部分开销。
+ * 返回 0..255 的 Uint8Array，可直接作为 alpha 使用。
+ */
+function featherMask(mask, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const i = row + x;
+      const v = mask[i];
+      /* 快速判定边界：四邻与自己是否一致 */
+      const up = y > 0 ? mask[i - w] : v;
+      const dn = y < h - 1 ? mask[i + w] : v;
+      const lf = x > 0 ? mask[i - 1] : v;
+      const rt = x < w - 1 ? mask[i + 1] : v;
+      if (up === v && dn === v && lf === v && rt === v) { out[i] = v; continue; }
+
+      /* 边界像素：3×3 均值 */
+      let sum = 0, cnt = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        const r2 = yy * w;
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= w) continue;
+          sum += mask[r2 + xx] ? 255 : 0;
+          cnt++;
+        }
+      }
+      out[i] = Math.round(sum / cnt);
+    }
+  }
+  return out;
+}
+
+/* 浮动选区的八个手柄位置（以中心为原点，未旋转的局部坐标）。
+ *
+ * 返回 [x, y, id]：id 用于判断拖拽的是哪个角/边，
+ * 进而决定缩放的方向与是否等比。
+ */
+function floatingHandles(sw, sh) {
+  const hw = sw / 2, hh = sh / 2;
+  return [
+    [-hw, -hh, 'nw'], [0, -hh, 'n'], [hw, -hh, 'ne'],
+    [hw, 0, 'e'],
+    [hw, hh, 'se'], [0, hh, 's'], [-hw, hh, 'sw'],
+    [-hw, 0, 'w'],
+  ];
+}
+
+/* 命中测试：指针是否落在某个手柄上（屏幕坐标，含旋转）。
+ * 返回手柄 id 或 null。手柄命中范围随缩放调整，保证任何缩放下都点得到。 */
+function hitHandle(clientX, clientY) {
+  if (!floating) return null;
+  const sw = floating.w * floating.scaleX;
+  const sh = floating.h * floating.scaleY;
+  const fcx = floating.x + floating.w / 2;
+  const fcy = floating.y + floating.h / 2;
+
+  /* 把指针从文档坐标转到浮动选区的局部坐标（逆旋转） */
+  const rad = -floating.angle * Math.PI / 180;
+  const dx = clientX - fcx, dy = clientY - fcy;
+  const lx = dx * Math.cos(rad) - dy * Math.sin(rad);
+  const ly = dx * Math.sin(rad) + dy * Math.cos(rad);
+
+  const tol = 9 / zoom;
+  for (const [hx, hy, id] of floatingHandles(sw, sh)) {
+    if (Math.abs(lx - hx) <= tol && Math.abs(ly - hy) <= tol) return id;
+  }
+  return null;
+}
+
+/* 将选区内容从图层提取到浮动画布，并清空原位置
+ *
+ * 选区是任意形状的蒙版，因此「提取」和「清除」都必须按蒙版裁切，
+ * 不能只处理外接矩形 —— 否则套索/魔棒选中的非矩形区域会把矩形里的
+ * 其他内容一起搬走。
+ *
+ * 浮动画布只覆盖外接矩形（省内存），但内容是蒙版裁过的；
+ * 同时记下相对外接矩形左上角的蒙版切片，落回时按它再裁一次。
+ */
 function liftSelection() {
   const sel = doc.selection;
   // paintTarget 本身即 TileCanvas（并非 Layer），无需再次获取 .canvas
   const tc = doc.paintTarget;
   if (!sel || !tc) return false;
 
-  const x = Math.round(sel.x0), y = Math.round(sel.y0);
-  const w = Math.max(1, Math.round(sel.x1 - sel.x0));
-  const h = Math.max(1, Math.round(sel.y1 - sel.y0));
-  if (w < 1 || h < 1) return false;
+  const bb = sel.bbox();
+  if (!bb) return false;
+  const x = bb.x0, y = bb.y0;
+  const w = Math.max(1, bb.x1 - bb.x0);
+  const h = Math.max(1, bb.y1 - bb.y0);
 
   const cv = newCanvas(w, h);
   const fctx = cv.getContext('2d');
@@ -983,16 +1202,81 @@ function liftSelection() {
     }
   }
 
-  // 在原位置清除
+  /* 把外接矩形内的蒙版切成一块局部蒙版，用于：
+   *   1) 裁掉浮动画布里不属于选区的像素
+   *   2) 从原图层清除时只清选区内的部分
+   * 存成局部尺寸的 Uint8Array，避免每块都引用整张文档大小的蒙版。 */
+  const localMask = new Uint8Array(w * h);
+  const src = sel.mask;
+  for (let ly = 0; ly < h; ly++) {
+    const sy = y + ly;
+    if (sy < 0 || sy >= sel.h) continue;
+    const srow = sy * sel.w;
+    const lrow = ly * w;
+    for (let lx = 0; lx < w; lx++) {
+      const sx = x + lx;
+      if (sx < 0 || sx >= sel.w) continue;
+      if (src[srow + sx]) localMask[lrow + lx] = 255;
+    }
+  }
+
+  /* 按蒙版裁浮动画布：选区之外变透明。
+   *
+   * 蒙版是硬边的（像素要么选中要么不选中），直接当 alpha 用会得到
+   * 锯齿状的边缘 —— 套索的斜边和魔棒的曲线尤其明显。
+   * 这里对蒙版做一次 3×3 均值平滑，让边缘有约一个像素的过渡，
+   * 视觉上等于抗锯齿，同时不改变选区的实际范围。
+   */
+  const maskCv = newCanvas(w, h);
+  const mctx = maskCv.getContext('2d');
+  const mimg = mctx.createImageData(w, h);
+  const soft = featherMask(localMask, w, h);
+  for (let i = 0, n = w * h; i < n; i++) {
+    if (soft[i]) { const p = i * 4; mimg.data[p + 3] = soft[i]; }
+  }
+  mctx.putImageData(mimg, 0, 0);
+  fctx.save();
+  fctx.globalCompositeOperation = 'destination-in';
+  fctx.drawImage(maskCv, 0, 0);
+  fctx.restore();
+
+  // 在原位置清除：同样按蒙版，只清选区内的像素
   const pending = history.beginStroke(tc);
   history.grabRegion(pending, x, y, x + w, y + h);
-  tc.forEachTileInBounds(x, y, x + w - 1, y + h - 1, ctx => {
-    ctx.clearRect(x, y, w, h);
-  });
+  /* 逐块直接操作：forEachTileInBounds 只提供 ctx 拿不到块坐标，
+   * 而这里需要块坐标来算文档坐标。在 ImageData 上按蒙版清零，
+   * 比逐块 clip 路径更快，也不会有路径锯齿。 */
+  for (let r = Math.floor(y / TILE); r <= Math.floor((y + h - 1) / TILE); r++) {
+    for (let c = Math.floor(x / TILE); c <= Math.floor((x + w - 1) / TILE); c++) {
+      const t = tc.tiles.get(c + ',' + r);
+      if (!t) continue;
+      const img = t.ctx.getImageData(0, 0, TILE, TILE);
+      const d = img.data;
+      let touched = false;
+      for (let py = 0; py < TILE; py++) {
+        const docY = r * TILE + py;
+        if (docY < y || docY >= y + h) continue;
+        const lrow = (docY - y) * w;
+        for (let px = 0; px < TILE; px++) {
+          const docX = c * TILE + px;
+          if (docX < x || docX >= x + w) continue;
+          if (!localMask[lrow + (docX - x)]) continue;
+          const p = (py * TILE + px) * 4;
+          if (d[p + 3] !== 0) { d[p] = 0; d[p + 1] = 0; d[p + 2] = 0; d[p + 3] = 0; touched = true; }
+        }
+      }
+      if (touched) t.ctx.putImageData(img, 0, 0);
+    }
+  }
   tc.markDirty(x, y, x + w, y + h);
 
   op('选区', '浮起', w + '×' + h);
-  floating = { canvas: cv, x, y, w, h, angle: 0, tc, rect: { x, y, w, h }, pending, moved: true };
+  floating = {
+    canvas: cv, x, y, w, h, angle: 0,
+    scaleX: 1, scaleY: 1,
+    mask: localMask, maskW: w, maskH: h,
+    tc, rect: { x, y, w, h }, pending, moved: true,
+  };
   doc.selection = null;
   syncFloatBar();
   redraw();
@@ -1007,22 +1291,36 @@ function commitFloating() {
   syncFloatBar();
 
   const tc = f.tc;
-  /* 临时画布必须按**旋转后**的包围盒创建，不能沿用原尺寸，
-   * 否则旋转 45° 后四个角会被裁切，且不可恢复。 */
+
+  /* 缩放后的尺寸。缩放与旋转都作用在这张临时画布上，
+   * 只做一次重采样 —— 反复缩放不会累积插值损失。 */
+  const sw = Math.max(1, f.w * f.scaleX);
+  const sh = Math.max(1, f.h * f.scaleY);
+
+  /* 临时画布必须按**变换后**的包围盒创建，不能沿用原尺寸，
+   * 否则旋转 45° 或放大后四个角会被裁切，且不可恢复。 */
   const rad = f.angle * Math.PI / 180;
   const ca = Math.abs(Math.cos(rad)), sa = Math.abs(Math.sin(rad));
-  const tw = Math.max(1, Math.ceil(f.w * ca + f.h * sa));
-  const th = Math.max(1, Math.ceil(f.w * sa + f.h * ca));
+  const tw = Math.max(1, Math.ceil(sw * ca + sh * sa));
+  const th = Math.max(1, Math.ceil(sw * sa + sh * ca));
 
   const tmp = newCanvas(tw, th);
   const tctx = tmp.getContext('2d');
+  tctx.imageSmoothingEnabled = true;
   tctx.translate(tw / 2, th / 2);
   tctx.rotate(rad);
-  tctx.drawImage(f.canvas, -f.w / 2, -f.h / 2);
+  tctx.drawImage(f.canvas, -sw / 2, -sh / 2, sw, sh);
 
-  // 绕中心旋转，中心保持不变：左上角 = 中心 - 新尺寸 / 2
-  const left = Math.round(f.x + f.w / 2 - tw / 2);
-  const top = Math.round(f.y + f.h / 2 - th / 2);
+  /* 绕中心变换，中心保持不变。
+   *
+   * 中心取**原始**尺寸算出的中心（f.x + f.w/2），不是缩放后的。
+   * 缩放只改变尺寸，不该移动中心 —— 若用 f.x + sw/2，
+   * 放大时中心会跟着往右下漂，内容整体偏移。
+   * 然后左上角 = 中心 - 变换后包围盒的一半。 */
+  const centerX = f.x + f.w / 2;
+  const centerY = f.y + f.h / 2;
+  const left = Math.round(centerX - tw / 2);
+  const top = Math.round(centerY - th / 2);
 
   /* 落回前先扩大撤销快照，使其覆盖「落回后的实际区域」。
    * 提取时拍摄的范围只有原矩形；旋转或移动后内容会越出该矩形，
@@ -1061,6 +1359,9 @@ const floatBar = $('float-bar');
 const fbRotate = $('fb-rotate');
 const fbVal = $('fb-val');
 
+const fbScale = $('fb-scale');
+const fbScaleVal = $('fb-scale-val');
+
 function syncFloatBar() {
   if (!floatBar) return;
   const on = !!floating && !!floating.moved;
@@ -1068,7 +1369,34 @@ function syncFloatBar() {
   if (on) {
     fbRotate.value = String(Math.round(floating.angle * 2) / 2);
     fbVal.textContent = (floating.angle > 0 ? '+' : '') + Math.round(floating.angle) + '°';
+    const wandTol = $('wand-tol');
+if (wandTol) {
+  const lbl = $('wand-tol-val');
+  const sync = () => { if (lbl) lbl.textContent = wandTol.value; };
+  wandTol.addEventListener('input', sync);
+  sync();
+}
+
+if (fbScale) {
+      /* 滑块只反映等比缩放；两轴不等时（边手柄单轴缩放）显示平均比例 */
+      const avg = (floating.scaleX + floating.scaleY) / 2;
+      fbScale.value = String(Math.round(avg * 100));
+      if (fbScaleVal) fbScaleVal.textContent = Math.round(avg * 100) + '%';
+    }
   }
+}
+
+if (fbScale) {
+  fbScale.addEventListener('input', () => {
+    if (!floating) return;
+    const r = Number(fbScale.value) / 100;
+    /* 滑块控制等比缩放：两轴一起变，符合「改整体大小」的直觉；
+     * 需要单轴拉伸时拖边中点手柄。 */
+    floating.scaleX = r;
+    floating.scaleY = r;
+    if (fbScaleVal) fbScaleVal.textContent = Math.round(r * 100) + '%';
+    requestPaint();
+  });
 }
 
 if (fbRotate) {
@@ -1081,6 +1409,8 @@ if (fbRotate) {
   $('fb-reset').onclick = () => {
     if (!floating) return;
     floating.angle = 0;
+    floating.scaleX = 1;
+    floating.scaleY = 1;
     syncFloatBar();
     requestPaint();
   };
@@ -1220,16 +1550,25 @@ function fit() {
 $('btn-fit').onclick = fit;
 
 /* ---------- 工具切换 ---------- */
-const TOOL_KEYS = { b: 'brush', e: 'eraser', i: 'pick', v: 'move', m: 'select', h: 'hand', z: 'zoom' };
+const TOOL_KEYS = {
+  b: 'brush', e: 'eraser', i: 'pick', v: 'move',
+  m: 'select', l: 'lasso', w: 'wand',
+  h: 'hand', z: 'zoom',
+};
 
 function setTool(next) {
   // 存在浮动选区时切换工具，需先将其落回图层，否则会一直挂起
-  if (floating && next !== 'select') commitFloating();
+  /* 离开选区类工具时把浮动选区落回，否则它会一直挂着 */
+  const SELECTION_TOOLS = ['select', 'lasso', 'wand'];
+  if (floating && !SELECTION_TOOLS.includes(next)) commitFloating();
   if (tool !== next) op('工具', next);
   tool = next;
   document.querySelectorAll('[data-tool]').forEach(b => {
     b.classList.toggle('on', b.dataset.tool === tool);
   });
+  /* 魔棒容差只在魔棒工具下显示 */
+  const wandRow = $('wand-row');
+  if (wandRow) wandRow.toggleAttribute('hidden', tool !== 'wand');
   syncBrushControls();
 }
 
@@ -1362,6 +1701,49 @@ function gestureMove(e) {
     return;
   }
 
+  if (g.kind === 'float-scale') {
+    /* 在浮动选区的局部坐标里算缩放：先把指针位移逆旋转回未旋转方向，
+     * 否则旋转过的选区拖角时方向会错。 */
+    const rad = -g.angle * Math.PI / 180;
+    const dx = p.x - g.x0, dy = p.y - g.y0;
+    const lx = dx * Math.cos(rad) - dy * Math.sin(rad);
+    const ly = dx * Math.sin(rad) + dy * Math.cos(rad);
+
+    const hw = g.fw / 2, hh = g.fh / 2;
+    const h = g.handle;
+    const isCorner = h.length === 2;
+
+    /* 指针在局部坐标里相对中心的偏移，换算成目标尺寸的一半，
+     * 再除以原尺寸的一半就是比例。 */
+    const ratioX = h.includes('e') ? (hw + lx) / hw : (h.includes('w') ? (hw - lx) / hw : g.sx);
+    const ratioY = h.includes('s') ? (hh + ly) / hh : (h.includes('n') ? (hh - ly) / hh : g.sy);
+
+    let sx, sy;
+    if (isCorner) {
+      /* 对角手柄等比缩放：取两轴中变化更大的那个，保持宽高比 */
+      const r = Math.max(0.05, Math.max(ratioX, ratioY));
+      sx = sy = r;
+    } else {
+      /* 边中点手柄只改一个轴 */
+      sx = h === 'e' || h === 'w' ? Math.max(0.05, ratioX) : g.sx;
+      sy = h === 'n' || h === 's' ? Math.max(0.05, ratioY) : g.sy;
+    }
+
+    floating.scaleX = Math.min(20, sx);
+    floating.scaleY = Math.min(20, sy);
+    requestPaint();
+    return;
+  }
+
+  if (g.kind === 'lasso') {
+    /* 记录路径。距离小于 2px 的点丢弃 —— 高采样率下相邻点几乎重合，
+     * 全存会让后续扫描线填充做大量无用功。 */
+    const last = g.points[g.points.length - 1];
+    if (Math.hypot(p.x - last[0], p.y - last[1]) >= 2) g.points.push([p.x, p.y]);
+    requestPaint();
+    return;
+  }
+
   if (g.kind === 'select') {
     g.rect = {
       x0: Math.min(g.x0, p.x), y0: Math.min(g.y0, p.y),
@@ -1414,10 +1796,28 @@ function gestureEnd() {
 
   if (g.kind === 'select') {
     const r = g.rect;
-    doc.selection = (r && (r.x1 - r.x0) > 1 && (r.y1 - r.y0) > 1) ? r : null;
-    op('选区', doc.selection
-      ? '框选 ' + Math.round(doc.selection.x1 - doc.selection.x0) + '×' + Math.round(doc.selection.y1 - doc.selection.y0)
-      : '清空');
+    if (r && (r.x1 - r.x0) > 1 && (r.y1 - r.y0) > 1) {
+      doc.selection = Selection.fromRect(doc.w, doc.h, r.x0, r.y0, r.x1, r.y1);
+      const b = doc.selection.bbox();
+      op('选区', '框选 ' + (b.x1 - b.x0) + '×' + (b.y1 - b.y0));
+    } else {
+      doc.selection = null;
+      op('选区', '清空');
+    }
+    requestPaint();
+    return;
+  }
+
+  if (g.kind === 'lasso') {
+    /* 路径点太少说明只是点了一下，当作清空选区 */
+    if (g.points.length < 3) {
+      doc.selection = null;
+      op('选区', '清空');
+    } else {
+      doc.selection = Selection.fromPolygon(doc.w, doc.h, g.points);
+      const b = doc.selection.bbox();
+      op('选区', '套索 ' + (b ? (b.x1 - b.x0) + '×' + (b.y1 - b.y0) : '空'));
+    }
     requestPaint();
     return;
   }
@@ -2131,6 +2531,8 @@ window.__achi = {
   get rotateLayer() { return rotateLayer; },
   get commitMove() { return commitMove; },
   pressureOf,
+  /* 选区：测试与调试需要构造，也需要魔棒入口 */
+  Selection, magicWandMask, applyMagicWand,
   /* 浮动选区：供测试与调试脚本走真实路径（拖动本身由手势层驱动） */
   liftSelection: () => liftSelection(),
   commitFloating: () => commitFloating(),
@@ -2642,7 +3044,12 @@ function consoleSnapshot() {
       background: doc.background,
       zoom: doc.view.zoom,
       viewX: doc.view.x, viewY: doc.view.y,
-      selection: doc.selection,
+      /* 选区是蒙版对象，直接序列化会得到一整张字节数组。
+       * 这里只给摘要：是否为空 + 外接矩形 + 选中像素数。 */
+      selection: doc.selection ? (() => {
+        const bb = doc.selection.bbox();
+        return bb ? { ...bb, pixels: doc.selection.count() } : null;
+      })() : null,
       active: doc.activeLeaf ? doc.activeLeaf.name : null,
       layers: leaves.map(l => ({
         name: l.name, visible: l.visible !== false,

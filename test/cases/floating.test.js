@@ -39,7 +39,8 @@ const CASES = {
     assertEq(before > 0, true, '前置条件：应有内容');
 
     /* 框选并用真实路径浮动 */
-    doc.selection = { x0: 50, y0: 50, x1: 150, y1: 150 };
+    /* 选区是 Selection 对象（蒙版），不是矩形 —— 矩形只是它的一种构造来源 */
+    doc.selection = window.__achi.Selection.fromRect(doc.w, doc.h, 50, 50, 150, 150);
     achi.liftSelection();
     await window.__t.waitFrame();
 

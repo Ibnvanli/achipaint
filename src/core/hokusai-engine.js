@@ -179,6 +179,61 @@ export class HokusaiEngine {
     return b;
   }
 
+  /* 按选区蒙版擦掉图层上的界外像素。
+   *
+   * 只处理 overlay 覆盖过的块；整块都在选区内时跳过，
+   * 整块都在选区外时直接清空。 */
+  _clipToSelection(layer, ov, sel) {
+    const TILE = this.canvas.tileSize();
+    const m = sel.mask, mw = sel.w, mh = sel.h;
+    const seen = new Set();
+
+    for (const o of ov.values()) {
+      const c0 = Math.floor(o.x / TILE), c1 = Math.floor((o.x + o.w - 1) / TILE);
+      const r0 = Math.floor(o.y / TILE), r1 = Math.floor((o.y + o.h - 1) / TILE);
+      for (let r = r0; r <= r1; r++) {
+        for (let c = c0; c <= c1; c++) {
+          const key = c + ',' + r;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const t = layer.tiles.get(key);
+          if (!t) continue;
+
+          /* 启发式：抽样判断这块是否完全在选区内 / 外 */
+          let anyIn = false, anyOut = false;
+          const probes = [
+            [0, 0], [TILE - 1, 0], [0, TILE - 1], [TILE - 1, TILE - 1], [TILE / 2, TILE / 2],
+          ];
+          for (const [px, py] of probes) {
+            const gx = Math.max(0, Math.min(mw - 1, c * TILE + px));
+            const gy = Math.max(0, Math.min(mh - 1, r * TILE + py));
+            if (m[gy * mw + gx]) anyIn = true; else anyOut = true;
+            if (anyIn && anyOut) break;
+          }
+          if (!anyIn) { t.ctx.clearRect(0, 0, TILE, TILE); continue; }
+          if (!anyOut) continue;
+
+          const img = t.ctx.getImageData(0, 0, TILE, TILE);
+          const d = img.data;
+          let touched = false;
+          for (let py = 0; py < TILE; py++) {
+            const gy = r * TILE + py;
+            if (gy < 0 || gy >= mh) continue;
+            const mrow = gy * mw;
+            for (let px = 0; px < TILE; px++) {
+              const gx = c * TILE + px;
+              if (gx < 0 || gx >= mw) continue;
+              if (m[mrow + gx]) continue;
+              const p = (py * TILE + px) * 4;
+              if (d[p + 3] !== 0) { d[p] = 0; d[p + 1] = 0; d[p + 2] = 0; d[p + 3] = 0; touched = true; }
+            }
+          }
+          if (touched) t.ctx.putImageData(img, 0, 0);
+        }
+      }
+    }
+  }
+
   /* ---------- 单笔 ---------- */
 
   begin(x, y, pressure, opts = {}) {
@@ -318,22 +373,26 @@ export class HokusaiEngine {
     const layer = this.doc.paintTarget || this.doc.layer.canvas;
     const sel = this.doc.selection;
     const ov = this.doc.overlay;
+
+    /* 选区裁切不能在压入前用 ctx.clip() 做 —— 选区是蒙版而非路径，
+     * 转成路径会平滑掉像素级边缘（魔棒尤其明显），
+     * 画出来的形状和用户看到的选区对不上。
+     *
+     * 改为：先整笔压入，再按蒙版把界外像素擦掉。
+     * 代价是多一次逐像素遍历，但只影响与选区边界相交的块。 */
     for (const o of ov.values()) {
       layer.forEachTileInBounds(o.x, o.y, o.x + o.w, o.y + o.h, ctx => {
-        if (sel) {
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(sel.x0, sel.y0, sel.x1 - sel.x0, sel.y1 - sel.y0);
-          ctx.clip();
-        }
         // 整笔一次性压入图层，alpha 才等于「这一笔的不透明度」；
         // 逐事件压入则等同于「每个事件各叠加一次」，越画越实。
         ctx.globalAlpha = this.opacity;
         ctx.globalCompositeOperation = 'source-over';
         ctx.drawImage(o.canvas, o.x, o.y, o.w, o.h);
-        if (sel) ctx.restore();
       });
       layer.markDirty(o.x, o.y, o.x + o.w, o.y + o.h);
+    }
+
+    if (sel && !sel.isEmpty()) {
+      this._clipToSelection(layer, ov, sel);
     }
     ov.clear();
     this.doc.overlayActive = false;

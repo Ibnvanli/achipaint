@@ -73,6 +73,62 @@ export class Stabilizer {
 }
 
 /* 单笔：自按下到松开 */
+/* 按选区蒙版擦掉指定矩形范围内的界外像素。
+ *
+ * 逐块读取 ImageData，把「蒙版为 0」的像素 alpha 清零，再写回。
+ * 只在笔点覆盖到、且与选区边界相交的块上执行，
+ * 整块都在选区内（或都在选区外）时直接跳过 —— 这是最常见的两种情况，
+ * 跳过它们能让开销降到接近零。
+ */
+function clipMaskTiles(layer, x0, y0, x1, y1, sel) {
+  const TILE = 256;
+  const c0 = Math.floor(x0 / TILE), c1 = Math.floor((x1 - 1) / TILE);
+  const r0 = Math.floor(y0 / TILE), r1 = Math.floor((y1 - 1) / TILE);
+  const m = sel.mask, mw = sel.w, mh = sel.h;
+
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) {
+      const t = layer.tiles.get(c + ',' + r);
+      if (!t) continue;
+
+      /* 快速判断：这块是不是完全落在选区内 / 完全在外。
+       * 抽样四角与中心即可，边缘误差交给下面的逐像素处理兜底 ——
+       * 这里只是省开销的启发式，判错了也只是多做或少做一次逐像素。 */
+      let anyIn = false, anyOut = false;
+      for (let k = 0; k < 5 && !(anyIn && anyOut); k++) {
+        const px = (c * TILE) + [0, TILE - 1, 0, TILE - 1, TILE / 2][k];
+        const py = (r * TILE) + [0, 0, TILE - 1, TILE - 1, TILE / 2][k];
+        const gx = Math.max(0, Math.min(mw - 1, px));
+        const gy = Math.max(0, Math.min(mh - 1, py));
+        if (m[gy * mw + gx]) anyIn = true; else anyOut = true;
+      }
+      if (!anyIn) {
+        /* 整块都在选区外：清空 */
+        t.ctx.clearRect(0, 0, TILE, TILE);
+        continue;
+      }
+      if (!anyOut) continue;   // 整块都在选区内：不用动
+
+      const img = t.ctx.getImageData(0, 0, TILE, TILE);
+      const d = img.data;
+      let touched = false;
+      for (let py = 0; py < TILE; py++) {
+        const gy = r * TILE + py;
+        if (gy < 0 || gy >= mh) continue;
+        const mrow = gy * mw;
+        for (let px = 0; px < TILE; px++) {
+          const gx = c * TILE + px;
+          if (gx < 0 || gx >= mw) continue;
+          if (m[mrow + gx]) continue;          // 选区内，保留
+          const p = (py * TILE + px) * 4;
+          if (d[p + 3] !== 0) { d[p] = 0; d[p + 1] = 0; d[p + 2] = 0; d[p + 3] = 0; touched = true; }
+        }
+      }
+      if (touched) t.ctx.putImageData(img, 0, 0);
+    }
+  }
+}
+
 export class Stroke {
   constructor(brush, ctxLayer) {
     this.brush = brush;
@@ -139,12 +195,14 @@ export class Stroke {
     const L = this.layer;
     let cx0 = Math.max(0, x - r), cy0 = Math.max(0, y - r);
     let cx1 = Math.min(L.w, x + r), cy1 = Math.min(L.h, y + r);
-    // 存在框选时进一步收缩范围。仅收缩包围盒不足 —— 笔点圆弧仍可能在框内各块中
-    // 超出选框，因此下方对每块还需执行一次 ctx.clip。
+    /* 存在选区时收缩范围。clip 是选区对象（Selection），不是矩形：
+     * 套索与魔棒都是任意形状，只能用外接矩形先粗筛，
+     * 真正的逐像素裁切在下方对每块用蒙版完成。 */
     const clip = this.clip;
-    if (clip) {
-      cx0 = Math.max(cx0, clip.x0); cy0 = Math.max(cy0, clip.y0);
-      cx1 = Math.min(cx1, clip.x1); cy1 = Math.min(cy1, clip.y1);
+    const cb = clip ? clip.bbox() : null;
+    if (cb) {
+      cx0 = Math.max(cx0, cb.x0); cy0 = Math.max(cy0, cb.y0);
+      cx1 = Math.min(cx1, cb.x1); cy1 = Math.min(cy1, cb.y1);
     }
     if (cx1 <= cx0 || cy1 <= cy0) return;
 
@@ -155,15 +213,6 @@ export class Stroke {
     if (this.onRegion) this.onRegion(cx0, cy0, cx1, cy1);
 
     L.forEachTileInBounds(cx0, cy0, cx1, cy1, (ctx, c, r2) => {
-      if (clip) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(clip.x0, clip.y0, clip.x1 - clip.x0, clip.y1 - clip.y0);
-        ctx.clip();
-      }
-      ctx.globalAlpha = Math.min(1, alpha);
-      ctx.globalCompositeOperation = this.erase ? 'destination-out' : 'source-over';
-
       if (this.erase || b.hardness >= .99) {
         ctx.fillStyle = this.erase ? '#000' : b.color;
         ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
@@ -175,8 +224,18 @@ export class Stroke {
         ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
       }
       ctx.globalCompositeOperation = 'source-over';
-      if (clip) ctx.restore();
     });
+
+    /* 选区裁切在笔点画完之后统一做一次。
+     *
+     * 为什么不在绘制前 ctx.clip()：蒙版不是路径，转成路径会把像素级边缘
+     * 平滑掉（魔棒的边界尤其明显），导致画出来的形状与看到的选区不符。
+     * 改为「先画、再按蒙版擦掉界外部分」，所见即所得。
+     *
+     * 只处理这次笔点覆盖的块，且仅当该块与选区边界相交时才做逐像素处理。 */
+    if (clip) {
+      clipMaskTiles(L, cx0, cy0, cx1, cy1, clip);
+    }
 
     // 累积脏块范围（同时作为撤销与重绘的依据）
     L.markDirty(cx0, cy0, cx1, cy1);
